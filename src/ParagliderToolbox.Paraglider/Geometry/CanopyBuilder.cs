@@ -30,6 +30,10 @@ namespace ParagliderToolbox.Paraglider.Geometry;
 /// <para>
 /// Displacements vanish on the ribs, so ribs built from the skin's rib columns close the cells exactly.
 /// </para>
+/// <para>
+/// A low poly skin (<see cref="Design.MeshSettings.IsLowPoly"/>) has columns only on every n-th rib and a few rows,
+/// on the smooth surface without any of the displacements or inlets.
+/// </para>
 /// </remarks>
 public sealed class CanopyBuilder
 {
@@ -39,6 +43,7 @@ public sealed class CanopyBuilder
     private readonly GliderShape _shape;
     private readonly RiggingLayout _rigging;
     private readonly Design.GliderDesign _design;
+    private readonly Design.MeshSettings _settings;
 
     private Column[] _columns = [];
     private double[] _rows = [];
@@ -61,6 +66,7 @@ public sealed class CanopyBuilder
         _shape = shape;
         _rigging = rigging;
         _design = shape.Design;
+        _settings = Design.MeshSettings.FromDesign(_design);
     }
 
     /// <summary>Gets the profile positions of the skin rows (−1 upper trailing edge … +1 lower trailing edge).</summary>
@@ -87,7 +93,7 @@ public sealed class CanopyBuilder
 
         for (int j = 0; j < columns - 1; j++)
         {
-            bool inletCell = IsInletCell(_columns[j].Cell);
+            bool inletCell = !_settings.IsLowPoly && IsInletCell(_columns[j].Cell);
             for (int i = 0; i < rows - 1; i++)
             {
                 if (inletCell && i >= _inletStartRow && i < _inletEndRow) continue;
@@ -131,9 +137,14 @@ public sealed class CanopyBuilder
 
     private void BuildGrid()
     {
+        if (_settings.IsLowPoly)
+        {
+            BuildLowPolyGrid();
+            return;
+        }
         var ribs = _shape.RibPositions;
         int mini = Math.Clamp(_design.MiniRibsPerCell, 0, 3);
-        int perCell = Math.Max(2, _design.SpanwiseSegmentsPerCell);
+        int perCell = Math.Max(2, _settings.SpanwiseSegmentsPerCell);
         perCell = (perCell + mini) / (mini + 1) * (mini + 1); // mini-ribs land on columns
         _segmentsPerCell = perCell;
 
@@ -152,7 +163,7 @@ public sealed class CanopyBuilder
         _columns = columns.ToArray();
 
         // Rows: even in t (dense at the nose in x), plus the inlet and mini-rib edges.
-        int segments = Math.Max(8, _design.ChordwiseSegments);
+        int segments = Math.Max(8, _settings.ChordwiseSegments);
         var rows = new List<double>();
         for (int i = 0; i <= 2 * segments; i++) rows.Add(-1 + i / (double)segments);
         double inletStart = GliderShape.ProfileParameter(Math.Abs(_design.InletStart), upper: _design.InletStart < 0);
@@ -180,6 +191,30 @@ public sealed class CanopyBuilder
 
         ComputeBase();
         ComputeFinal();
+    }
+
+    // The low poly skin: columns on every n-th rib (counted from the tips, plus the center rib), a few rows around the
+    // profile, the smooth surface without ballooning, creases or inlets.
+    private void BuildLowPolyGrid()
+    {
+        var ribs = _shape.RibPositions;
+        int cells = _shape.CellCount;
+        int every = Math.Max(2, _settings.CellsPerSegment);
+        var columns = new List<Column>();
+        for (int r = 0; r <= cells; r++)
+        {
+            int fromTip = Math.Min(r, cells - r);
+            if (fromTip % every != 0 && 2 * r != cells) continue;
+            columns.Add(new Column(ribs[r], Math.Min(r, cells - 1), r == cells ? 1 : 0, r, false));
+        }
+        _columns = columns.ToArray();
+        _segmentsPerCell = 1;
+
+        int segments = Math.Max(2, _settings.ChordwiseSegments);
+        _rows = Enumerable.Range(0, 2 * segments + 1).Select(i => -1 + i / (double)segments).ToArray();
+        _inletStartRow = _inletEndRow = -1;
+        ComputeBase();
+        _final = (Vector3[,])_base.Clone();
     }
 
     private int NearestRow(double t)

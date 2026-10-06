@@ -214,4 +214,85 @@ public class ParagliderModuleTests
         dialogs.EditAnswer = false;
         Assert.Null(await actions.AskPolarSettingsAsync(node));
     }
+
+    [Fact]
+    public async Task AddingAParaglider_AsksForTheClassAndDetail_AndCreatesThatPreset()
+    {
+        var dialogs = new FakeDialogs();
+        var toolbox = CreateToolbox(dialogs);
+        toolbox.SelectedNode = toolbox.Document.Project;
+        dialogs.DialogAction = content =>
+        {
+            var options = Assert.IsType<NewParagliderOptions>(content.DataContext);
+            Assert.Equal("Low EN-B", options.Name); // follows the class until edited
+            options.Class = WingClass.EnD;
+            Assert.Equal("EN-D", options.Name);
+            options.Detail = MeshDetail.LowPoly;
+            options.Name = "Comp wing";
+            options.Class = WingClass.EnC; // keeps the edited name
+            options.Class = WingClass.EnD;
+        };
+
+        var node = Assert.IsType<ParagliderNode>(await toolbox.ProjectCommands.AddNodeInteractivelyAsync(toolbox.NodeTypes.Find("paraglider")!));
+
+        Assert.Contains("Dialog:New paraglider", dialogs.Asked);
+        Assert.Equal("Comp wing", node.Name);
+        Assert.Equal(78, node.CellCount);
+        Assert.Equal(2, node.RowCount);
+        Assert.Equal(MeshDetail.LowPoly, node.MeshDetail);
+        Assert.Same(node, toolbox.SelectedNode);
+    }
+
+    [Fact]
+    public async Task CancelingTheNewParagliderDialog_AddsNothing()
+    {
+        var dialogs = new FakeDialogs { DialogAnswer = false };
+        var toolbox = CreateToolbox(dialogs);
+        toolbox.SelectedNode = toolbox.Document.Project;
+
+        Assert.Null(await toolbox.ProjectCommands.AddNodeInteractivelyAsync(toolbox.NodeTypes.Find("paraglider")!));
+        Assert.Empty(toolbox.Document.Project.Children);
+    }
+
+    [Fact]
+    public void MeshDetail_WritesItsSettings_AndEditingASettingMakesItCustom()
+    {
+        var node = new ParagliderNode();
+        Assert.Equal(MeshDetail.Custom, node.MeshDetail);
+        var changed = new List<string?>();
+        node.PropertyChanged += (_, e) => changed.Add(e.PropertyName);
+
+        node.MeshDetail = MeshDetail.LowPoly;
+        Assert.True(node.CellsPerSegment > 1);
+        Assert.Equal(2, node.LineSides);
+        Assert.Contains(nameof(ParagliderNode.CellsPerSegment), changed);
+
+        node.ChordwiseSegments = 8;
+        Assert.Equal(MeshDetail.Custom, node.MeshDetail);
+        Assert.Equal(8, node.Snapshot().ChordwiseSegments);
+    }
+
+    [Fact]
+    public void MeshDetail_RoundTrips_AndOldFilesLoadTheirOwnMeshSettings()
+    {
+        var toolbox = CreateToolbox();
+        var node = new ParagliderNode(GliderPresets.Create(WingClass.EnA, MeshDetail.LowPoly)) { Name = "School" };
+        toolbox.Document.Project.Children.Add(node);
+
+        string json = toolbox.Serializer.Serialize(toolbox.Document.Project);
+        var copy = Assert.IsType<ParagliderNode>(Assert.Single(toolbox.Serializer.Deserialize(json).Children));
+        Assert.Equal(MeshDetail.LowPoly, copy.MeshDetail);
+        Assert.Equal(node.CellsPerSegment, copy.CellsPerSegment);
+        Assert.Equal(40, copy.CellCount);
+
+        // A file from before the mesh detail: no "meshDetail", its own settings.
+        var root = System.Text.Json.Nodes.JsonNode.Parse(json)!;
+        var saved = root["project"]!["children"]![0]!.AsObject();
+        Assert.True(saved.Remove("meshDetail"));
+        saved["cellsPerSegment"] = 1;
+        saved["spanwiseSegmentsPerCell"] = 4;
+        var old = Assert.IsType<ParagliderNode>(Assert.Single(toolbox.Serializer.Deserialize(root.ToJsonString()).Children));
+        Assert.Equal(MeshDetail.Custom, old.MeshDetail);
+        Assert.Equal(4, old.SpanwiseSegmentsPerCell);
+    }
 }

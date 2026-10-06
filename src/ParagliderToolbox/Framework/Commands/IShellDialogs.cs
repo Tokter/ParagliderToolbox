@@ -57,6 +57,16 @@ public interface IShellDialogs
     /// </summary>
     Task<bool> EditPropertiesAsync(string title, object target, string confirmText, string? message = null);
 
+    /// <summary>
+    /// Shows <paramref name="content"/> (a module's own UI, bound to the object it edits) in a dialog with Cancel and
+    /// <paramref name="confirmText"/>; returns whether <paramref name="confirmText"/> was chosen.
+    /// </summary>
+    /// <param name="title">The dialog's title.</param>
+    /// <param name="content">The dialog's content; its <c>DataContext</c> is what it edits.</param>
+    /// <param name="confirmText">The text of the confirming button.</param>
+    /// <param name="maxWidth">The dialog's maximum width (device-independent pixels).</param>
+    Task<bool> ShowDialogAsync(string title, Atelier.Core.Tree.UIElement content, string confirmText, float maxWidth = 640);
+
     /// <summary>Opens the command palette.</summary>
     void ShowCommandPalette();
 

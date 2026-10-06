@@ -24,13 +24,19 @@ public partial class ParagliderNode : ContainerNode
     public static readonly string[] CategoryOrder =
         ["General", "Planform", "Arc", "Airfoil", "Inlet", "Cells", "Ballooning", "Rigging", "Appearance", "Physics proxy", "Mesh", "Dimensions"];
 
-    private readonly GliderDesign _design = new();
+    private readonly GliderDesign _design;
     private GliderShape? _shape;
     private int _shapeVersion = -1;
 
     /// <summary>Initializes a paraglider with the default (EN-B like) design.</summary>
-    public ParagliderNode()
+    public ParagliderNode() : this(new GliderDesign())
     {
+    }
+
+    /// <summary>Initializes a paraglider with a copy of <paramref name="design"/>, e.g. one of the <see cref="GliderPresets"/>.</summary>
+    public ParagliderNode(GliderDesign design)
+    {
+        _design = design.Clone();
         Name = "Paraglider";
     }
 
@@ -250,8 +256,8 @@ public partial class ParagliderNode : ContainerNode
 
     #region Rigging
 
-    [InspectableProperty("Line rows", "Rigging", Order = 60, Description = "3 (A, B, C) or 4 (A, B, C, D).")]
-    public int RowCount { get => _design.RowCount; set => Set(_design.RowCount, Math.Clamp(value, 3, 4), v => _design.RowCount = v); }
+    [InspectableProperty("Line rows", "Rigging", Order = 60, Description = "2 (A, B: a two-liner), 3 (A, B, C) or 4 (A, B, C, D).")]
+    public int RowCount { get => _design.RowCount; set => Set(_design.RowCount, Math.Clamp(value, 2, 4), v => _design.RowCount = v); }
 
     [InspectableProperty("A row", "Rigging", Order = 61, Description = "Chord position of the A tabs.")]
     public double RowA { get => _design.RowA; set => Set(_design.RowA, Math.Clamp(value, 0.03, 0.4), v => _design.RowA = v); }
@@ -259,7 +265,7 @@ public partial class ParagliderNode : ContainerNode
     [InspectableProperty("B row", "Rigging", Order = 62, Description = "Chord position of the B tabs.")]
     public double RowB { get => _design.RowB; set => Set(_design.RowB, Math.Clamp(value, 0.1, 0.7), v => _design.RowB = v); }
 
-    [InspectableProperty("C row", "Rigging", Order = 63, Description = "Chord position of the C tabs.")]
+    [InspectableProperty("C row", "Rigging", Order = 63, Description = "Chord position of the C tabs (with three or four rows).")]
     public double RowC { get => _design.RowC; set => Set(_design.RowC, Math.Clamp(value, 0.2, 0.9), v => _design.RowC = v); }
 
     [InspectableProperty("D row", "Rigging", Order = 64, Description = "Chord position of the D tabs (with four rows).")]
@@ -300,6 +306,9 @@ public partial class ParagliderNode : ContainerNode
 
     [InspectableProperty("Brake travel (m)", "Rigging", Order = 76, Description = "Brake travel from the end of the slack to full brakes.")]
     public double BrakeTravel { get => _design.BrakeTravel; set => Set(_design.BrakeTravel, Math.Clamp(value, 0.2, 1.2), v => _design.BrakeTravel = v); }
+
+    [InspectableProperty("Speed bar travel (m)", "Rigging", Order = 76, Description = "How much the speed bar shortens the A risers: about 0.1 for school wings, 0.12–0.14 for EN-B, 0.16–0.2 for competition wings.")]
+    public double SpeedBarTravel { get => _design.SpeedBarTravel; set => Set(_design.SpeedBarTravel, Math.Clamp(value, 0, 0.3), v => _design.SpeedBarTravel = v); }
 
     [InspectableProperty("Trim angle of attack (°)", "Rigging", Order = 77, Description = "Angle of attack of the center chord in trim flight; with the glide ratio it sets the canopy's pitch.")]
     public double TrimAngleOfAttack { get => _design.TrimAngleOfAttack; set => Set(_design.TrimAngleOfAttack, Math.Clamp(value, 0, 20), v => _design.TrimAngleOfAttack = v); }
@@ -349,8 +358,8 @@ public partial class ParagliderNode : ContainerNode
     [InspectableProperty("Brand text", "Appearance", Order = 96, Description = "Printed on the lower surface; empty for none.")]
     public string BrandText { get => _design.BrandText; set => Set(_design.BrandText, value ?? string.Empty, v => _design.BrandText = v); }
 
-    [InspectableProperty("Texture size", "Appearance", Order = 97, Description = "Pixels of the exported canopy textures (the preview uses 2048).")]
-    public int TextureSize { get => _design.TextureSize; set => Set(_design.TextureSize, Math.Clamp(value, 512, 8192), v => _design.TextureSize = v); }
+    [InspectableProperty("Texture size", "Appearance", Order = 97, Description = "Custom: pixels of the exported canopy textures (the preview uses at most 2048). The mesh detail sets it otherwise.")]
+    public int TextureSize { get => _design.TextureSize; set => SetMesh(_design.TextureSize, Math.Clamp(value, 256, 8192), v => _design.TextureSize = v); }
 
     [InspectableProperty("Fabric translucency", "Appearance", Order = 98, Description = "How much light shows through the fabric when it's backlit (0–1).")]
     public double FabricTranslucency { get => _design.FabricTranslucency; set => Set(_design.FabricTranslucency, Math.Clamp(value, 0, 1), v => _design.FabricTranslucency = v); }
@@ -422,20 +431,64 @@ public partial class ParagliderNode : ContainerNode
 
     #region Mesh
 
-    [InspectableProperty("Segments per cell", "Mesh", Order = 120, Description = "Mesh segments across each cell (rounded so mini-ribs land on vertices).")]
-    public int SpanwiseSegmentsPerCell { get => _design.SpanwiseSegmentsPerCell; set => Set(_design.SpanwiseSegmentsPerCell, Math.Clamp(value, 2, 40), v => _design.SpanwiseSegmentsPerCell = v); }
+    [InspectableProperty("Segments per cell", "Mesh", Order = 120, Description = "Custom: mesh segments across each cell (rounded so mini-ribs land on vertices).")]
+    public int SpanwiseSegmentsPerCell { get => _design.SpanwiseSegmentsPerCell; set => SetMesh(_design.SpanwiseSegmentsPerCell, Math.Clamp(value, 1, 40), v => _design.SpanwiseSegmentsPerCell = v); }
 
-    [InspectableProperty("Chordwise segments", "Mesh", Order = 121, Description = "Mesh segments along each of the upper and lower surface.")]
-    public int ChordwiseSegments { get => _design.ChordwiseSegments; set => Set(_design.ChordwiseSegments, Math.Clamp(value, 10, 400), v => _design.ChordwiseSegments = v); }
+    [InspectableProperty("Cells per segment", "Mesh", Order = 121, Description = "Custom: 1 builds every cell with its ballooning; more builds a low poly skin between every n-th rib.")]
+    public int CellsPerSegment { get => _design.CellsPerSegment; set => SetMesh(_design.CellsPerSegment, Math.Clamp(value, 1, 20), v => _design.CellsPerSegment = v); }
 
-    [InspectableProperty("Internal ribs", "Mesh", Order = 122, Description = "Generate the internal ribs with cross-vents, mini-ribs and diagonal ribs.")]
-    public bool GenerateRibs { get => _design.GenerateRibs; set => Set(_design.GenerateRibs, value, v => _design.GenerateRibs = v); }
+    [InspectableProperty("Chordwise segments", "Mesh", Order = 122, Description = "Custom: mesh segments along each of the upper and lower surface.")]
+    public int ChordwiseSegments { get => _design.ChordwiseSegments; set => SetMesh(_design.ChordwiseSegments, Math.Clamp(value, 2, 400), v => _design.ChordwiseSegments = v); }
 
-    [InspectableProperty("Rigging", "Mesh", Order = 123, Description = "Generate the lines, risers, brake toggles and hardware.")]
+    [InspectableProperty("Internal ribs", "Mesh", Order = 123, Description = "Custom: generate the internal ribs with cross-vents, mini-ribs and diagonal ribs.")]
+    public bool GenerateRibs { get => _design.GenerateRibs; set => SetMesh(_design.GenerateRibs, value, v => _design.GenerateRibs = v); }
+
+    [InspectableProperty("Rigging", "Mesh", Order = 124, Description = "Generate the lines, risers, brake toggles and hardware.")]
     public bool GenerateRigging { get => _design.GenerateRigging; set => Set(_design.GenerateRigging, value, v => _design.GenerateRigging = v); }
 
-    [InspectableProperty("Line sides", "Mesh", Order = 124, Description = "Number of sides of the line tubes.")]
-    public int LineSides { get => _design.LineSides; set => Set(_design.LineSides, Math.Clamp(value, 3, 16), v => _design.LineSides = v); }
+    [InspectableProperty("Line sides", "Mesh", Order = 125, Description = "Custom: number of sides of the line tubes; 2 draws flat ribbons.")]
+    public int LineSides { get => _design.LineSides; set => SetMesh(_design.LineSides, Math.Clamp(value, 2, 16), v => _design.LineSides = v); }
+
+    [InspectableProperty("Line segment length (m)", "Mesh", Order = 126, Description = "Custom: length of the segments along the lines, so they bend smoothly; 0 draws each line straight.")]
+    public double LineSegmentLength { get => _design.LineSegmentLength; set => SetMesh(_design.LineSegmentLength, Math.Clamp(value, 0, 10), v => _design.LineSegmentLength = v); }
+
+    [InspectableProperty("Hardware segments", "Mesh", Order = 127, Description = "Custom: segments around the maillons, pulleys and carabiners; below 6 draws simple low poly shapes.")]
+    public int HardwareSegments { get => _design.HardwareSegments; set => SetMesh(_design.HardwareSegments, Math.Clamp(value, 0, 48), v => _design.HardwareSegments = v); }
+
+    // Declared (and saved) after the settings it overrides, so loading a file sets them first and doesn't switch to Custom.
+    [InspectableProperty("Detail", "Mesh", Order = 119,
+        Description = "Low poly (a few hundred triangles, for games), Medium (tens of thousands), High (hundreds of thousands, for renders), or Custom: the settings below.")]
+    [JsonPropertyOrder(1)]
+    public MeshDetail MeshDetail
+    {
+        get => _design.MeshDetail;
+        set
+        {
+            if (_design.MeshDetail == value) return;
+            GliderPresets.SetMeshDetail(_design, value);
+            DesignVersion++;
+            OnPropertyChanged();
+            foreach (string name in MeshSettingNames) OnPropertyChanged(name);
+        }
+    }
+
+    private static readonly string[] MeshSettingNames =
+    [
+        nameof(SpanwiseSegmentsPerCell), nameof(CellsPerSegment), nameof(ChordwiseSegments), nameof(GenerateRibs), nameof(LineSides),
+        nameof(LineSegmentLength), nameof(HardwareSegments), nameof(TextureSize),
+    ];
+
+    // Changing a setting a preset level overrides makes the mesh Custom, so the change shows.
+    private bool SetMesh<T>(T current, T value, Action<T> apply, [CallerMemberName] string? name = null)
+    {
+        if (!Set(current, value, apply, name)) return false;
+        if (_design.MeshDetail != MeshDetail.Custom)
+        {
+            _design.MeshDetail = MeshDetail.Custom;
+            OnPropertyChanged(nameof(MeshDetail));
+        }
+        return true;
+    }
 
     #endregion
 

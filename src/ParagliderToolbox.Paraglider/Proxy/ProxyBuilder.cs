@@ -11,18 +11,63 @@ namespace ParagliderToolbox.Paraglider.Proxy;
 /// <param name="ExtraStations">Chord stations added between the line rows (and the nose and tail).</param>
 /// <param name="DoubleSurface">Upper and lower surface, or a single camber surface.</param>
 /// <param name="Cascades">Whether cascade knots are nodes.</param>
-public readonly record struct ProxySettings(int SectionStride, int IntermediateSections, int ExtraStations, bool DoubleSurface, bool Cascades)
+/// <param name="LineSegmentLength">
+/// The longest line segment (m): longer suspension lines get points along them, so slack lines sag and bow; 0 keeps
+/// them straight. Brake lines always get at least two segments.
+/// </param>
+public readonly record struct ProxySettings(int SectionStride, int IntermediateSections, int ExtraStations, bool DoubleSurface, bool Cascades,
+    float LineSegmentLength = 0)
 {
     /// <summary>Gets the settings of a design.</summary>
     public static ProxySettings FromDesign(GliderDesign design) => design.ProxyComplexity switch
     {
-        ProxyComplexity.Arcade => new(3, 0, 0, false, false),
-        ProxyComplexity.Low => new(2, 0, 0, true, false),
-        ProxyComplexity.Medium => new(1, 0, 1, true, true),
-        ProxyComplexity.High => new(1, 1, 2, true, true),
+        ProxyComplexity.Arcade => new(3, 0, 0, false, false, 0),
+        ProxyComplexity.Low => new(2, 0, 0, true, false, 0),
+        ProxyComplexity.Medium => new(1, 0, 1, true, true, 2.5f),
+        ProxyComplexity.High => new(1, 1, 2, true, true, 1.5f),
         _ => new(Math.Max(1, design.ProxySectionStride), Math.Max(0, design.ProxyIntermediateSections),
-            Math.Clamp(design.ProxyExtraChordStations, 0, 2), design.ProxyDoubleSurface, design.ProxyCascades),
+            Math.Clamp(design.ProxyExtraChordStations, 0, 2), design.ProxyDoubleSurface, design.ProxyCascades,
+            design.ProxyCascades ? 2.5f : 0),
     };
+}
+
+/// <summary>
+/// The material of the proxy: XPBD compliances (m/N, 0 is rigid) of each constraint kind when stretched and when
+/// compressed. Fabric and ribs are stiff in tension. Against compression and folding an inflated cell is stiff (its
+/// pressure holds the shape) but an empty one is limp fabric: the solver blends between the inflated and the
+/// <c>Deflated</c> compliance by the cells' pressure, so a wing holds its shape in flight and folds when it collapses.
+/// </summary>
+public sealed record ProxyMaterial
+{
+    /// <summary>Gets the compliance of the canopy fabric along the chord and the span when stretched.</summary>
+    public float Fabric { get; init; } = 2e-7f;
+
+    /// <summary>Gets the compliance of the fabric of an inflated cell when compressed.</summary>
+    public float FabricCompression { get; init; } = 4e-4f;
+
+    /// <summary>Gets the compliance of the surface diagonals (bias stretch of the fabric) when stretched.</summary>
+    public float Shear { get; init; } = 2e-5f;
+
+    /// <summary>Gets the compliance of the surface diagonals of an inflated cell when compressed.</summary>
+    public float ShearCompression { get; init; } = 2e-5f;
+
+    /// <summary>Gets the compliance of the ribs (profile height and diagonals) when stretched.</summary>
+    public float Rib { get; init; } = 2e-7f;
+
+    /// <summary>Gets the compliance of the ribs of an inflated cell when compressed.</summary>
+    public float RibCompression { get; init; } = 1e-3f;
+
+    /// <summary>Gets the compliance of the bending constraints of an inflated cell.</summary>
+    public float Bend { get; init; } = 4e-3f;
+
+    /// <summary>Gets the compliance of all canopy constraints against compression and folding when the cells are empty (fabric buckles).</summary>
+    public float Deflated { get; init; } = 0.05f;
+
+    /// <summary>Gets the bending compliance near the nose when the wing has leading edge rods (they keep the nose round, inflated or not).</summary>
+    public float RodBend { get; init; } = 4e-3f;
+
+    /// <summary>Gets the axial stiffness EA of a line (N).</summary>
+    public float LineStiffness { get; init; } = 30000f;
 }
 
 /// <summary>The proxy and how the rigging maps onto it, for skinning.</summary>
@@ -36,6 +81,18 @@ public sealed class ProxyBuild
 
     /// <summary>Gets the proxy node of each rigging point that has one (tabs on sections, knots with cascades, risers, ...).</summary>
     public required Dictionary<int, int> RigPointNodes { get; init; }
+
+    /// <summary>
+    /// Gets the proxy nodes along each line of the line plan that is a proxy line, keyed by its upper and lower rigging
+    /// point: from the upper end through the points along it to the lower end.
+    /// </summary>
+    public Dictionary<(int Upper, int Lower), int[]> LinePaths { get; init; } = [];
+
+    /// <summary>
+    /// Gets, for a proxy without cascades, the proxy nodes from each tab (rigging point) down its line to the riser or
+    /// pulley.
+    /// </summary>
+    public Dictionary<int, int[]> TabPaths { get; init; } = [];
 }
 
 /// <summary>
@@ -50,19 +107,19 @@ public sealed class ProxyBuild
 /// </remarks>
 public static class ProxyBuilder
 {
-    private const float FabricCompliance = 2e-7f;
-    private const float FabricCompression = 4e-4f;
-    private const float ShearCompliance = 2e-5f;
-    private const float RibCompliance = 2e-7f;
-    private const float RibCompression = 1e-3f;
-    private const float BendCompliance = 4e-3f;
-    private const float LineStiffness = 30000f; // N, EA of a typical line
+    // A line of the proxy: its constraints from the upper end down, and the nodes along it (both ends included).
+    private sealed record LineChain(string Name, ConstraintKind Kind, List<int> Nodes, List<int> Constraints)
+    {
+        public int Upper => Nodes[0];
+        public int Lower => Nodes[^1];
+    }
 
     /// <summary>Builds the proxy of a glider.</summary>
-    public static ProxyBuild Build(GliderShape shape, RiggingLayout rigging)
+    public static ProxyBuild Build(GliderShape shape, RiggingLayout rigging, ProxyMaterial? material = null)
     {
         var design = shape.Design;
         var settings = ProxySettings.FromDesign(design);
+        material ??= new ProxyMaterial();
         var model = new ProxyModel
         {
             Complexity = design.ProxyComplexity.ToString(),
@@ -88,13 +145,34 @@ public static class ProxyBuilder
         var sectionRibs = ChooseSectionRibs(shape, rigging, settings);
         var stations = ChooseStations(design.RowPositions, settings.ExtraStations);
         BuildSections(model, shape, sectionRibs, stations, settings.DoubleSurface);
-        BuildFabric(model, settings.DoubleSurface);
-        var rigNodes = BuildRigging(model, shape, rigging, sectionRibs, settings);
-        if (settings.DoubleSurface) BuildDiagonalRibs(model);
+        BuildFabric(model, settings.DoubleSurface, material, design.LeadingEdgeRods);
+        var (rigNodes, chains) = BuildRigging(model, shape, rigging, sectionRibs, settings, material);
+        if (settings.DoubleSurface) BuildDiagonalRibs(model, material);
         BuildStrips(model, shape, sectionRibs, settings.DoubleSurface);
+        SubdivideLines(model, chains, settings);
         DistributeMass(model, shape, design);
-        BuildControls(model, shape, rigging, rigNodes);
-        return new ProxyBuild { Model = model, Settings = settings, RigPointNodes = rigNodes };
+        BuildControls(model, shape, rigging, rigNodes, chains);
+
+        // Which proxy nodes each line of the line plan runs through, for skinning the line tubes.
+        var linePaths = new Dictionary<(int, int), int[]>();
+        var tabPaths = new Dictionary<int, int[]>();
+        var chainByEnds = chains.GroupBy(c => (c.Upper, c.Lower)).ToDictionary(g => g.Key, g => g.First());
+        foreach (var line in rigging.Lines)
+        {
+            if (rigNodes.TryGetValue(line.Upper, out int a) && rigNodes.TryGetValue(line.Lower, out int b) && chainByEnds.TryGetValue((a, b), out var chain))
+            {
+                linePaths[(line.Upper, line.Lower)] = [.. chain.Nodes];
+            }
+        }
+        if (!settings.Cascades)
+        {
+            foreach (var tab in rigging.Points.Where(p => p.Kind is RigPointKind.Tab or RigPointKind.BrakeTab))
+            {
+                if (!rigNodes.TryGetValue(tab.Id, out int node)) continue;
+                if (chains.FirstOrDefault(c => c.Upper == node && c.Kind == ConstraintKind.Line) is { } chain) tabPaths[tab.Id] = [.. chain.Nodes];
+            }
+        }
+        return new ProxyBuild { Model = model, Settings = settings, RigPointNodes = rigNodes, LinePaths = linePaths, TabPaths = tabPaths };
     }
 
     private static List<int> ChooseSectionRibs(GliderShape shape, RiggingLayout rigging, ProxySettings settings)
@@ -187,8 +265,13 @@ public static class ProxyBuilder
         return chain;
     }
 
-    private static void BuildFabric(ProxyModel model, bool doubleSurface)
+    private static void BuildFabric(ProxyModel model, bool doubleSurface, ProxyMaterial material, bool rods)
     {
+        // A single camber surface has no cells to inflate: it stays a stiff, arcade-style sail.
+        float fabricCompression = doubleSurface ? material.FabricCompression : 4e-4f;
+        float shearCompression = doubleSurface ? material.ShearCompression : material.Shear;
+        float bend = doubleSurface ? material.Bend : 4e-3f;
+        float deflated = doubleSurface ? material.Deflated : 0;
         var surfaces = doubleSurface ? new[] { true, false } : new[] { false };
         for (int s = 0; s < model.Sections.Count; s++)
         {
@@ -196,18 +279,24 @@ public static class ProxyBuilder
             foreach (bool upper in surfaces)
             {
                 var chain = Chain(section, upper);
-                for (int k = 0; k < chain.Count - 1; k++) AddDistance(model, chain[k], chain[k + 1], ConstraintKind.Chordwise, FabricCompliance, FabricCompression);
-                for (int k = 0; k < chain.Count - 2; k++) AddDistance(model, chain[k], chain[k + 2], ConstraintKind.Bend, BendCompliance, BendCompliance);
+                for (int k = 0; k < chain.Count - 1; k++) AddDistance(model, chain[k], chain[k + 1], ConstraintKind.Chordwise, material.Fabric, fabricCompression, deflated);
+                for (int k = 0; k < chain.Count - 2; k++)
+                {
+                    // Leading edge rods keep the nose round (up to about a fifth of the chord).
+                    bool rod = rods && doubleSurface && StationOf(section, k + 2, chain.Count) <= 0.2f;
+                    float c = rod ? material.RodBend : bend;
+                    AddDistance(model, chain[k], chain[k + 2], ConstraintKind.Bend, c, c, rod ? 0 : deflated);
+                }
             }
             if (doubleSurface)
             {
                 for (int k = 0; k < section.Upper.Count; k++)
                 {
-                    AddDistance(model, section.Upper[k], section.Lower[k], ConstraintKind.Rib, RibCompliance, RibCompression);
+                    AddDistance(model, section.Upper[k], section.Lower[k], ConstraintKind.Rib, material.Rib, material.RibCompression, deflated);
                     if (k + 1 < section.Upper.Count)
                     {
-                        AddDistance(model, section.Upper[k], section.Lower[k + 1], ConstraintKind.Rib, RibCompliance, RibCompression);
-                        AddDistance(model, section.Upper[k + 1], section.Lower[k], ConstraintKind.Rib, RibCompliance, RibCompression);
+                        AddDistance(model, section.Upper[k], section.Lower[k + 1], ConstraintKind.Rib, material.Rib, material.RibCompression, deflated);
+                        AddDistance(model, section.Upper[k + 1], section.Lower[k], ConstraintKind.Rib, material.Rib, material.RibCompression, deflated);
                     }
                 }
             }
@@ -222,12 +311,12 @@ public static class ProxyBuilder
                 {
                     if (!upper || (k > 0 && k < a.Count - 1)) // nose and tail are shared by both surfaces
                     {
-                        AddDistance(model, a[k], b[k], ConstraintKind.Spanwise, FabricCompliance, FabricCompression);
+                        AddDistance(model, a[k], b[k], ConstraintKind.Spanwise, material.Fabric, fabricCompression, deflated);
                     }
                     if (k + 1 < a.Count)
                     {
-                        AddDistance(model, a[k], b[k + 1], ConstraintKind.Shear, ShearCompliance, ShearCompliance);
-                        AddDistance(model, a[k + 1], b[k], ConstraintKind.Shear, ShearCompliance, ShearCompliance);
+                        AddDistance(model, a[k], b[k + 1], ConstraintKind.Shear, material.Shear, shearCompression, deflated);
+                        AddDistance(model, a[k + 1], b[k], ConstraintKind.Shear, material.Shear, shearCompression, deflated);
                     }
                 }
             }
@@ -238,15 +327,18 @@ public static class ProxyBuilder
                 {
                     var a = Chain(section, upper);
                     var c = Chain(after, upper);
-                    for (int k = 0; k < a.Count; k++) AddDistance(model, a[k], c[k], ConstraintKind.Bend, BendCompliance, BendCompliance);
+                    for (int k = 0; k < a.Count; k++) AddDistance(model, a[k], c[k], ConstraintKind.Bend, bend, bend, deflated);
                 }
             }
         }
     }
 
+    // The chord fraction of the k-th node of a section's chain (0 at the nose, 1 at the tail).
+    private static float StationOf(ProxySection section, int k, int count) => k == 0 ? 0 : k >= count - 1 ? 1 : section.Stations[k - 1];
+
     // Diagonal (V) ribs: a section without lines hangs from the line attachments of its neighbors, from their lower
     // surface up to its upper surface, as the diagonal ribs between tab ribs do in a real wing.
-    private static void BuildDiagonalRibs(ProxyModel model)
+    private static void BuildDiagonalRibs(ProxyModel model, ProxyMaterial material)
     {
         var withLines = new HashSet<int>();
         foreach (var c in model.Constraints.Where(c => c.Kind == ConstraintKind.Line))
@@ -266,13 +358,14 @@ public static class ProxyBuilder
                 var neighbor = model.Sections[t];
                 for (int k = 0; k < neighbor.Lower.Count && k < section.Upper.Count; k++)
                 {
-                    if (withLines.Contains(neighbor.Lower[k])) AddDistance(model, neighbor.Lower[k], section.Upper[k], ConstraintKind.Rib, RibCompliance, RibCompression);
+                    if (withLines.Contains(neighbor.Lower[k])) AddDistance(model, neighbor.Lower[k], section.Upper[k], ConstraintKind.Rib, material.Rib, material.RibCompression, material.Deflated);
                 }
             }
         }
     }
 
-    private static Dictionary<int, int> BuildRigging(ProxyModel model, GliderShape shape, RiggingLayout rigging, List<int> sectionRibs, ProxySettings settings)
+    private static (Dictionary<int, int> Map, List<LineChain> Chains) BuildRigging(ProxyModel model, GliderShape shape, RiggingLayout rigging,
+        List<int> sectionRibs, ProxySettings settings, ProxyMaterial material)
     {
         var map = new Dictionary<int, int>();
         var sectionOfRib = sectionRibs.Select((rib, s) => (rib, s)).ToDictionary(p => p.rib, p => p.s);
@@ -324,12 +417,13 @@ public static class ProxyBuilder
         }
 
         // Lines between mapped points (merging duplicates), or straight from each tab to its riser without cascades.
+        // Lines are tension-only: they go slack when unloaded.
         var added = new HashSet<(int, int)>();
         void AddLine(int a, int b, string name, ConstraintKind kind = ConstraintKind.Line)
         {
             if (a == b || !added.Add((Math.Min(a, b), Math.Max(a, b)))) return;
             float length = Vector3.Distance(model.Nodes[a].Position, model.Nodes[b].Position);
-            float compliance = kind == ConstraintKind.Line ? length / LineStiffness : 2e-6f;
+            float compliance = kind == ConstraintKind.Line ? length / material.LineStiffness : 2e-6f;
             model.Constraints.Add(new ProxyConstraint
             {
                 A = a, B = b, Kind = kind, RestLength = length, Compliance = compliance, CompressionCompliance = 0,
@@ -362,26 +456,17 @@ public static class ProxyBuilder
                 AddLine(node, map[anchor.Id], name);
             }
         }
-
-        // Risers, the brake handle and the pilot.
         foreach (var line in rigging.Lines.Where(l => l.Level is LineLevel.Riser))
         {
             AddLine(map[line.Upper], map[line.Lower], line.Name, ConstraintKind.Riser);
         }
-        foreach (int side in new[] { 1, -1 })
-        {
-            int carabiner = map[rigging.Carabiner(side).Id];
-            var tops = rigging.Points.Where(p => p.Kind == RigPointKind.RiserTop && p.Side == side).OrderBy(p => p.Row).Select(p => map[p.Id]).ToList();
-            // The maillons of a side stay together (the riser webbing and its stitching).
-            for (int i = 0; i < tops.Count - 1; i++) AddDistance(model, tops[i], tops[i + 1], ConstraintKind.Harness, 1e-5f, 1e-5f);
-            int pulley = map[rigging.Points.First(p => p.Kind == RigPointKind.Pulley && p.Side == side).Id];
-            int toggle = map[rigging.Toggle(side).Id];
-            AddDistance(model, pulley, tops[^1], ConstraintKind.Harness, 0, 0);
-            AddDistance(model, pulley, carabiner, ConstraintKind.Harness, 0, 0);
-            AddDistance(model, toggle, pulley, ConstraintKind.Harness, 0, 0);
-            AddDistance(model, toggle, carabiner, ConstraintKind.Harness, 0, 0);
-        }
+        // Every line and riser so far is one constraint from its upper to its lower end (SubdivideLines adds points).
+        var chains = model.Constraints.Select((c, i) => (c, i))
+            .Where(p => p.c.Kind is ConstraintKind.Line or ConstraintKind.Riser)
+            .Select(p => new LineChain(p.c.Name ?? string.Empty, p.c.Kind, [p.c.A, p.c.B], [p.i]))
+            .ToList();
 
+        // The pilot hangs from the carabiners.
         int left = map[rigging.Carabiner(1).Id], right = map[rigging.Carabiner(-1).Id];
         var pilotPosition = (model.Nodes[left].Position + model.Nodes[right].Position) / 2 - new Vector3(0, 0.38f, 0.05f);
         model.Pilot = AddNode(model, "Pilot", ProxyNodeKind.Pilot, pilotPosition, -1, 0, 0);
@@ -389,16 +474,94 @@ public static class ProxyBuilder
         AddDistance(model, model.Pilot, right, ConstraintKind.Harness, 0, 0);
         AddDistance(model, left, right, ConstraintKind.Harness, 0, 0);
 
+        foreach (int side in new[] { 1, -1 })
+        {
+            string s = side > 0 ? "L" : "R";
+            int carabiner = map[rigging.Carabiner(side).Id];
+            var tops = rigging.Points.Where(p => p.Kind == RigPointKind.RiserTop && p.Side == side).OrderBy(p => p.Row).Select(p => map[p.Id]).ToList();
+            // The maillons of a side stay together (the riser webbing and its stitching); the speed bar pulls them apart.
+            for (int i = 0; i < tops.Count - 1; i++)
+            {
+                AddDistance(model, tops[i], tops[i + 1], ConstraintKind.Harness, 1e-5f, 1e-5f);
+                model.Constraints[^1].Name = $"Maillons {s} {RiggingLayout.RowName(i)}{RiggingLayout.RowName(i + 1)}";
+            }
+            int pulley = map[rigging.Points.First(p => p.Kind == RigPointKind.Pulley && p.Side == side).Id];
+            AddDistance(model, pulley, tops[^1], ConstraintKind.Harness, 0, 0);
+            AddDistance(model, pulley, carabiner, ConstraintKind.Harness, 0, 0);
+
+            // The pilot's hand holds the toggle, at fixed distances from the pilot and both carabiners (so in the
+            // harness's frame); the brakes change these distances so the toggle moves down to the hip.
+            int toggle = map[rigging.Toggle(side).Id];
+            foreach (int anchor in new[] { model.Pilot, carabiner, side > 0 ? right : left })
+            {
+                AddDistance(model, toggle, anchor, ConstraintKind.Hand, 0, 0);
+                model.Constraints[^1].Name = $"Hand {s}";
+            }
+        }
+
         // Line drag: the proxy's lines together get the drag area of all the real lines (a simpler proxy has fewer,
         // so each stands for more line).
-        double realArea = rigging.Lines.Where(l => l.Level != LineLevel.Riser).Sum(l => l.Diameter / 1000 * l.Length);
+        double realArea = rigging.Lines.Where(l => l.Level is not (LineLevel.Riser or LineLevel.BrakeHandle)).Sum(l => l.Diameter / 1000 * l.Length);
         double proxyLength = model.Constraints.Where(c => c.Kind == ConstraintKind.Line).Sum(c => c.RestLength);
         foreach (var c in model.Constraints)
         {
             if (c.Kind == ConstraintKind.Line) c.DragDiameter = (float)(realArea / Math.Max(proxyLength, 1e-6));
             else if (c.Kind == ConstraintKind.Riser) c.DragDiameter = 0.025f;
         }
-        return map;
+        return (map, chains);
+    }
+
+    // Long lines get points along them (evenly spaced), so a slack line sags and bows in the airflow instead of staying
+    // straight. Brake lines always get at least two segments: they hang slack in trim and bow back.
+    private static void SubdivideLines(ProxyModel model, List<LineChain> chains, ProxySettings settings)
+    {
+        foreach (var chain in chains)
+        {
+            if (chain.Kind != ConstraintKind.Line || chain.Constraints.Count != 1) continue;
+            var c = model.Constraints[chain.Constraints[0]];
+            bool brake = chain.Name.StartsWith("Brake", StringComparison.Ordinal);
+            // Only the lines hanging on the risers and pulleys (main lines; tab lines without cascades).
+            var lowerKind = model.Nodes[c.B].Kind;
+            if (lowerKind is not (ProxyNodeKind.RiserTop or ProxyNodeKind.Pulley)) continue;
+            int segments = settings.LineSegmentLength > 0 ? (int)Math.Ceiling(c.RestLength / settings.LineSegmentLength) : 1;
+            if (brake) segments = Math.Max(segments, 2);
+            if (segments < 2) continue;
+
+            var a = model.Nodes[c.A].Position;
+            var b = model.Nodes[c.B].Position;
+            int index = chain.Constraints[0];
+            int lower = c.B;
+            float segmentRest = c.RestLength / segments;
+            float compliance = c.Compliance / segments;
+            int previous = c.A;
+            chain.Nodes.Clear();
+            chain.Nodes.Add(c.A);
+            chain.Constraints.Clear();
+            for (int i = 1; i <= segments; i++)
+            {
+                int next = i < segments
+                    ? AddNode(model, $"{chain.Name} {i}", ProxyNodeKind.LinePoint, Vector3.Lerp(a, b, i / (float)segments), -1, 0, model.Nodes[lower].Side)
+                    : lower;
+                if (i == 1)
+                {
+                    c.B = next;
+                    c.RestLength = segmentRest;
+                    c.Compliance = compliance;
+                    chain.Constraints.Add(index);
+                }
+                else
+                {
+                    model.Constraints.Add(new ProxyConstraint
+                    {
+                        A = previous, B = next, Kind = ConstraintKind.Line, RestLength = segmentRest, Compliance = compliance,
+                        TensionOnly = true, Name = c.Name, DragDiameter = c.DragDiameter,
+                    });
+                    chain.Constraints.Add(model.Constraints.Count - 1);
+                }
+                chain.Nodes.Add(next);
+                previous = next;
+            }
+        }
     }
 
     // Knots whose upper lines all went (their tabs aren't on sections) are removed, with the lines below them.
@@ -556,7 +719,16 @@ public static class ProxyBuilder
             }
         }
         double total = weights.Sum();
-        var lineNodes = model.Nodes.Where(n => n.Kind is ProxyNodeKind.Knot or ProxyNodeKind.RiserTop).ToList();
+
+        // The lines' mass goes to the knots and points along them, by the length of line they carry.
+        var lineShare = new double[model.Nodes.Count];
+        var lines = model.Constraints.Where(c => c.Kind == ConstraintKind.Line).ToList();
+        double lineLength = Math.Max(1e-6, lines.Sum(c => c.RestLength));
+        foreach (var c in lines)
+        {
+            lineShare[c.A] += c.RestLength / 2;
+            lineShare[c.B] += c.RestLength / 2;
+        }
         foreach (var node in model.Nodes)
         {
             node.Mass = node.Kind switch
@@ -564,88 +736,202 @@ public static class ProxyBuilder
                 ProxyNodeKind.Pilot => (float)design.PilotMass,
                 ProxyNodeKind.Carabiner => 0.4f,
                 ProxyNodeKind.Pulley or ProxyNodeKind.Toggle => 0.05f,
-                ProxyNodeKind.Knot or ProxyNodeKind.RiserTop => lineMass / Math.Max(1, lineNodes.Count),
+                ProxyNodeKind.RiserTop => 0.05f + (float)(lineMass * lineShare[node.Id] / lineLength),
+                ProxyNodeKind.Knot or ProxyNodeKind.LinePoint => (float)(lineMass * lineShare[node.Id] / lineLength),
                 _ => (float)(canopyMass * weights[node.Id] / total),
             };
             node.Mass = Math.Max(node.Mass, 0.002f);
         }
     }
 
-    private static void BuildControls(ProxyModel model, GliderShape shape, RiggingLayout rigging, Dictionary<int, int> map)
+    private static void BuildControls(ProxyModel model, GliderShape shape, RiggingLayout rigging, Dictionary<int, int> map, List<LineChain> chains)
     {
+        var design = shape.Design;
         float halfProjected = (float)shape.ProjectedSpan / 2;
-        int rows = shape.Design.RowPositions.Length;
+        int rows = design.RowPositions.Length;
+        float slack = (float)design.BrakeSlack, travel = (float)design.BrakeTravel;
+        int leftCarabiner = map[rigging.Carabiner(1).Id], rightCarabiner = map[rigging.Carabiner(-1).Id];
+
+        // Shortens a whole line by `amount` at full input, spread over its segments by their length.
+        static void Pull(ProxyModel model, ProxyControl control, LineChain chain, float amount)
+        {
+            float length = chain.Constraints.Sum(i => model.Constraints[i].RestLength);
+            foreach (int i in chain.Constraints)
+            {
+                control.Constraints.Add(i);
+                control.Travel.Add(amount * model.Constraints[i].RestLength / length);
+            }
+        }
+
         foreach (int side in new[] { 1, -1 })
         {
             string s = side > 0 ? "Left" : "Right";
             int pulley = map[rigging.Points.First(p => p.Kind == RigPointKind.Pulley && p.Side == side).Id];
             var brake = new ProxyControl { Name = "Brake" + s };
-            foreach (var (c, i) in model.Constraints.Select((c, i) => (c, i)))
+            foreach (var chain in chains.Where(c => c.Kind == ConstraintKind.Line && c.Lower == pulley))
             {
-                if (c.Kind == ConstraintKind.Line && (c.A == pulley || c.B == pulley))
-                {
-                    brake.Constraints.Add(i);
-                    // Brake lines have some slack at rest: the first centimeters of travel do nothing.
-                    model.Constraints[i].RestLength += (float)shape.Design.BrakeSlack;
-                    brake.Travel.Add((float)(shape.Design.BrakeTravel + shape.Design.BrakeSlack));
-                }
+                // Brake lines have some slack at rest: the first centimeters of travel do nothing.
+                float length = chain.Constraints.Sum(i => model.Constraints[i].RestLength);
+                foreach (int i in chain.Constraints) model.Constraints[i].RestLength *= 1 + slack / length;
+                Pull(model, brake, chain, travel + slack);
+            }
+
+            // The hand: the toggle moves from below the pulley down along the brake line by the whole travel, toward the
+            // hip, staying behind the plane of the pilot and the carabiners (where its three distances keep it).
+            int toggle = map[rigging.Toggle(side).Id];
+            int carabiner = side > 0 ? leftCarabiner : rightCarabiner;
+            var rest = model.Nodes[toggle].Position;
+            var pulleyPosition = model.Nodes[pulley].Position;
+            var hip = model.Nodes[carabiner].Position + new Vector3(side * 0.12f, -0.45f, 0);
+            var full = pulleyPosition + Vector3.Normalize(hip - pulleyPosition) * (Vector3.Distance(rest, pulleyPosition) + travel + slack);
+            var pilot = model.Nodes[model.Pilot].Position;
+            var normal = Vector3.Normalize(Vector3.Cross(model.Nodes[leftCarabiner].Position - pilot, model.Nodes[rightCarabiner].Position - pilot));
+            float restSide = Vector3.Dot(rest - pilot, normal), fullSide = Vector3.Dot(full - pilot, normal);
+            float wanted = MathF.Sign(restSide) * MathF.Max(0.04f, MathF.Sign(restSide) * fullSide);
+            full += normal * (wanted - fullSide);
+            for (int i = 0; i < model.Constraints.Count; i++)
+            {
+                var c = model.Constraints[i];
+                if (c.Kind != ConstraintKind.Hand || c.A != toggle) continue;
+                brake.Constraints.Add(i);
+                brake.Travel.Add(c.RestLength - Vector3.Distance(full, model.Nodes[c.B].Position));
             }
             model.Controls.Add(brake);
 
-            // Pulling the outer A lines down folds the outer canopy: an asymmetric collapse.
+            // Pulling A lines down folds the canopy they hold: an asymmetric collapse folds the outer half of the half
+            // span, big ears the outer quarter. Each line is pulled by the share of the canopy it holds in that part.
             var collapse = new ProxyControl { Name = "Collapse" + s };
             var ears = new ProxyControl { Name = "BigEars" + s };
             int riserA = map[rigging.RiserTop(0, side).Id];
-            foreach (var (c, i) in model.Constraints.Select((c, i) => (c, i)))
+            foreach (var chain in chains.Where(c => c.Kind == ConstraintKind.Line && c.Lower == riserA && c.Name.StartsWith('A')))
             {
-                if (c.Kind != ConstraintKind.Line || c.Name is null || !c.Name.StartsWith('A')) continue;
-                if (!IsOnSide(model, c, side)) continue;
-                float outer = Math.Max(Math.Abs(model.Nodes[c.A].Position.X), Math.Abs(model.Nodes[c.B].Position.X)) / halfProjected;
-                // The lines hanging on the A riser: main lines with cascades, otherwise the tab lines themselves.
-                if (c.A != riserA && c.B != riserA) continue;
-                if (outer > 0.35f)
-                {
-                    collapse.Constraints.Add(i);
-                    collapse.Travel.Add(1.2f);
-                }
-                if (outer > 0.6f)
-                {
-                    ears.Constraints.Add(i);
-                    ears.Travel.Add(0.7f);
-                }
+                float collapseShare = OuterShare(model, chain, CollapseSpan);
+                float earsShare = OuterShare(model, chain, BigEarsSpan);
+                if (collapseShare > 0) Pull(model, collapse, chain, 1.2f * collapseShare);
+                if (earsShare > 0) Pull(model, ears, chain, 0.7f * earsShare);
             }
+            CloseOuter(model, collapse, side, CollapseSpan);
+            CloseOuter(model, ears, side, BigEarsSpan);
             model.Controls.Add(collapse);
             model.Controls.Add(ears);
         }
 
+        // The speed bar shortens the front risers (A the most, the last row not at all), which pulls their maillons
+        // apart; a frontal collapse pulls all the A lines.
         var speedBar = new ProxyControl { Name = "SpeedBar" };
         var frontal = new ProxyControl { Name = "Frontal" };
-        foreach (var (c, i) in model.Constraints.Select((c, i) => (c, i)))
+        float barTravel = (float)design.SpeedBarTravel;
+        float RiserTravel(int row) => row < rows - 1 ? barTravel * (rows - 1 - row) / (rows - 1) : 0;
+        for (int i = 0; i < model.Constraints.Count; i++)
         {
-            if (c.Kind == ConstraintKind.Riser && c.Name is { } name && name.Length > 6)
+            var c = model.Constraints[i];
+            if (c.Kind == ConstraintKind.Riser && c.Name is { Length: > 6 } name)
             {
                 int row = name[^1] - 'A';
-                if (row >= 0 && row < rows - 1)
+                if (row >= 0 && RiserTravel(row) > 0)
                 {
                     speedBar.Constraints.Add(i);
-                    speedBar.Travel.Add(0.15f * (rows - 1 - row) / (rows - 1));
+                    speedBar.Travel.Add(RiserTravel(row));
                 }
             }
-            bool onRiser = model.Nodes[c.A].Kind == ProxyNodeKind.RiserTop || model.Nodes[c.B].Kind == ProxyNodeKind.RiserTop;
-            if (c.Kind == ConstraintKind.Line && c.Name is { } line && line.StartsWith('A') && onRiser)
+            else if (c.Kind == ConstraintKind.Harness && c.Name is { } maillons && maillons.StartsWith("Maillons", StringComparison.Ordinal))
             {
-                frontal.Constraints.Add(i);
-                frontal.Travel.Add(0.55f);
+                int row = maillons[^2] - 'A';
+                float offset = RiserTravel(row) - RiserTravel(row + 1);
+                speedBar.Constraints.Add(i);
+                speedBar.Travel.Add(c.RestLength - MathF.Sqrt(c.RestLength * c.RestLength + offset * offset));
+            }
+        }
+        foreach (int side in new[] { 1, -1 })
+        {
+            int riserA = map[rigging.RiserTop(0, side).Id];
+            foreach (var chain in chains.Where(c => c.Kind == ConstraintKind.Line && c.Lower == riserA && c.Name.StartsWith('A')))
+            {
+                Pull(model, frontal, chain, 0.55f);
+                Close(model, frontal, chain);
             }
         }
         model.Controls.Add(speedBar);
+        FillGaps(frontal);
         model.Controls.Add(frontal);
     }
 
-    private static bool IsOnSide(ProxyModel model, ProxyConstraint c, int side) =>
-        model.Nodes[c.A].Side == side || model.Nodes[c.B].Side == side;
 
-    private static void AddDistance(ProxyModel model, int a, int b, ConstraintKind kind, float compliance, float compression)
+    // The canopy nodes a line holds up: walking up the cascade from its upper end.
+    private static List<int> HeldNodes(ProxyModel model, LineChain chain)
+    {
+        var below = new HashSet<int>(chain.Nodes);
+        var seen = new HashSet<int> { chain.Upper };
+        var queue = new Queue<int>([chain.Upper]);
+        var held = new List<int>();
+        while (queue.Count > 0)
+        {
+            int node = queue.Dequeue();
+            if (model.Nodes[node].Section >= 0)
+            {
+                held.Add(node);
+                continue;
+            }
+            foreach (var c in model.Constraints)
+            {
+                if (c.Kind != ConstraintKind.Line || (c.A != node && c.B != node)) continue;
+                int other = c.A == node ? c.B : c.A;
+                if (below.Contains(other) || !seen.Add(other)) continue;
+                queue.Enqueue(other);
+            }
+        }
+        return held;
+    }
+
+
+    // The outer part of the half span (fraction from the tip) an asymmetric collapse and big ears fold.
+    private const float CollapseSpan = 0.5f, BigEarsSpan = 0.25f;
+
+    // The share of the canopy nodes a line holds that lie in the outer `span` of the half span (by η).
+    private static float OuterShare(ProxyModel model, LineChain chain, float span)
+    {
+        var held = HeldNodes(model, chain);
+        if (held.Count == 0) return 0;
+        return held.Count(n => Math.Abs(model.Sections[model.Nodes[n].Section].Eta) >= 1 - span - 1e-4f) / (float)held.Count;
+    }
+
+    // The control closes the inlets of the cells in the outer `span` of a side's half span.
+    private static void CloseOuter(ProxyModel model, ProxyControl control, int side, float span)
+    {
+        for (int s = 0; s < model.Strips.Count; s++)
+        {
+            float a = model.Sections[model.Strips[s].SectionA].Eta, b = model.Sections[model.Strips[s].SectionB].Eta;
+            float middle = (a + b) / 2;
+            if (Math.Sign(middle) == side && Math.Abs(middle) >= 1 - span) control.Strips.Add(s);
+        }
+    }
+    // The cells between those the control's lines hold close too (the folded leading edge spans them).
+    private static void FillGaps(ProxyControl control)
+    {
+        if (control.Strips.Count == 0) return;
+        int first = control.Strips.Min(), last = control.Strips.Max();
+        control.Strips = Enumerable.Range(first, last - first + 1).ToList();
+    }
+    // The mean lateral distance (m) of the canopy nodes a line holds up.
+    private static float TabSpan(ProxyModel model, LineChain chain)
+    {
+        var held = HeldNodes(model, chain);
+        return held.Count > 0 ? held.Average(n => Math.Abs(model.Nodes[n].Position.X)) : Math.Abs(model.Nodes[chain.Upper].Position.X);
+    }
+
+    // The control closes the inlets of the strips between the outermost sections the line holds.
+    private static void Close(ProxyModel model, ProxyControl control, LineChain chain)
+    {
+        var sections = HeldNodes(model, chain).Select(n => model.Nodes[n].Section).ToList();
+        if (sections.Count == 0) return;
+        int first = sections.Min(), last = sections.Max();
+        for (int s = 0; s < model.Strips.Count; s++)
+        {
+            var strip = model.Strips[s];
+            if (strip.SectionA >= first && strip.SectionB <= last && !control.Strips.Contains(s)) control.Strips.Add(s);
+        }
+    }
+    private static void AddDistance(ProxyModel model, int a, int b, ConstraintKind kind, float compliance, float compression, float deflated = 0)
     {
         model.Constraints.Add(new ProxyConstraint
         {
@@ -655,6 +941,7 @@ public static class ProxyBuilder
             RestLength = Vector3.Distance(model.Nodes[a].Position, model.Nodes[b].Position),
             Compliance = compliance,
             CompressionCompliance = compression,
+            DeflatedCompliance = deflated,
         });
     }
 }

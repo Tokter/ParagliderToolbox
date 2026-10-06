@@ -95,9 +95,25 @@ public sealed class SkinBinder
     private Dictionary<int, double> RiggingWeights(int pointA, int pointB, double fraction)
     {
         var weights = new Dictionary<int, double>();
+        // A line the proxy has points along (so it can sag) follows them.
+        if (_build.LinePaths.TryGetValue((pointA, pointB), out var path))
+        {
+            AddAlong(weights, path, fraction, 1);
+            return weights;
+        }
         foreach (var (node, w) in RigPointWeights(pointA)) Add(weights, node, w * (1 - fraction));
         foreach (var (node, w) in RigPointWeights(pointB)) Add(weights, node, w * fraction);
         return weights;
+    }
+
+    // The point at `fraction` of the way along a path of nodes (evenly spaced, as the proxy places them).
+    private static void AddAlong(Dictionary<int, double> weights, int[] path, double fraction, double scale)
+    {
+        double position = Math.Clamp(fraction, 0, 1) * (path.Length - 1);
+        int k = Math.Min((int)Math.Floor(position), path.Length - 2);
+        double f = position - k;
+        Add(weights, path[k], scale * (1 - f));
+        Add(weights, path[k + 1], scale * f);
     }
 
     private Dictionary<int, double> RigPointWeights(int pointId)
@@ -128,9 +144,15 @@ public sealed class SkinBinder
             double f = total > 0 ? Vector3.Distance(center, point.Position) / total : 0;
             foreach (int t in tabs)
             {
+                // Along the tab's proxy line when it has points along it, otherwise between its ends.
+                if (_build.TabPaths.TryGetValue(t, out var path))
+                {
+                    AddAlong(weights, path, f, 1.0 / tabs.Count);
+                    continue;
+                }
                 foreach (var (n, w) in RigPointWeights(t)) Add(weights, n, w * (1 - f) / tabs.Count);
+                foreach (var (n, w) in RigPointWeights(anchor)) Add(weights, n, w * f / tabs.Count);
             }
-            foreach (var (n, w) in RigPointWeights(anchor)) Add(weights, n, w * f);
         }
         lock (_rigWeights) _rigWeights[pointId] = weights;
         return weights;

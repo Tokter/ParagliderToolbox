@@ -25,6 +25,8 @@ public enum ProxyNodeKind
     Toggle,
     /// <summary>The pilot's center of mass.</summary>
     Pilot,
+    /// <summary>A point along a long line, so the line can sag and bow when it is slack.</summary>
+    LinePoint,
 }
 
 /// <summary>A mass point of the proxy.</summary>
@@ -75,6 +77,8 @@ public enum ConstraintKind
     Riser,
     /// <summary>The pilot's connection to the carabiners and the chest strap.</summary>
     Harness,
+    /// <summary>The pilot's hand holding a brake toggle (its length follows the brake input, so the toggle moves down).</summary>
+    Hand,
 }
 
 /// <summary>
@@ -90,6 +94,15 @@ public sealed class ProxyConstraint
     public float Compliance { get; set; }
     public float CompressionCompliance { get; set; }
     public bool TensionOnly { get; set; }
+
+    /// <summary>
+    /// Gets or sets the compliance of a canopy constraint when its cells are empty (0: it doesn't depend on the
+    /// pressure). Inflated fabric holds its shape, empty fabric folds: the solver blends the stiffness (1 / compliance)
+    /// from <see cref="CompressionCompliance"/> when inflated to this when deflated, by the cells' pressure and airspeed
+    /// (see the format documentation). It applies to compression, and for <see cref="ConstraintKind.Bend"/> to both
+    /// directions.
+    /// </summary>
+    public float DeflatedCompliance { get; set; }
 
     /// <summary>Gets or sets the line's name (lines and risers), e.g. "A main L1".</summary>
     public string? Name { get; set; }
@@ -154,8 +167,14 @@ public sealed class ProxyControl
     /// <summary>Gets or sets the controlled constraints.</summary>
     public List<int> Constraints { get; set; } = [];
 
-    /// <summary>Gets or sets how much each constraint shortens at full input (m), in the order of <see cref="Constraints"/>.</summary>
+    /// <summary>Gets or sets how much each constraint shortens at full input (m), in the order of <see cref="Constraints"/>; negative values lengthen it.</summary>
     public List<float> Travel { get; set; } = [];
+
+    /// <summary>
+    /// Gets or sets the strips whose inlets the control closes (by its input): pulling A lines folds the leading edge
+    /// under, which the strip aerodynamics can't resolve, so the cells it holds empty while the lines are pulled.
+    /// </summary>
+    public List<int> Strips { get; set; } = [];
 }
 
 /// <summary>A sampled section polar: lift, drag and moment coefficients by angle of attack.</summary>
@@ -176,7 +195,7 @@ public sealed class ProxyPolar
 public sealed class ProxyModel
 {
     /// <summary>The version of the JSON format.</summary>
-    public const int CurrentFormatVersion = 1;
+    public const int CurrentFormatVersion = 2;
 
     public string Format { get; set; } = "ParagliderToolbox.Proxy";
     public int FormatVersion { get; set; } = CurrentFormatVersion;
@@ -225,8 +244,11 @@ public sealed class ProxyModel
     /// <summary>Gets or sets the angle of attack (degrees) below which the inlets close and the cells deflate.</summary>
     public float InletClosingAlpha { get; set; } = -1.5f;
 
-    /// <summary>Gets or sets how long a cell takes to refill or deflate (s).</summary>
+    /// <summary>Gets or sets how long a cell takes to refill at 10 m/s (s); faster at higher airspeeds.</summary>
     public float CellPressureTimeConstant { get; set; } = 0.6f;
+
+    /// <summary>Gets or sets how long a cell takes to deflate once its inlet closes (s).</summary>
+    public float CellDeflationTimeConstant { get; set; } = 0.25f;
 
     /// <summary>Gets the node with <paramref name="name"/>, or null.</summary>
     public ProxyNode? FindNode(string name) => Nodes.FirstOrDefault(n => n.Name == name);

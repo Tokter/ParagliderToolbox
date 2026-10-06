@@ -61,6 +61,40 @@ public class ProjectCommandsTests
         Assert.Null(KeybindingManager.FindCommand(ProjectCommands.Group, "AddProject"));
     }
 
+    private sealed class AskedNode : ProjectNode
+    {
+        public string Answer { get; set; } = string.Empty;
+    }
+
+    [Fact]
+    public async Task AddingInteractively_AddsWhatTheTypesFactoryCreates()
+    {
+        var toolbox = TestToolbox.Create();
+        var type = toolbox.NodeTypes.Register<AskedNode>("asked", "Asked", Atelier.Controls.MaterialIconKind.Help,
+            createInteractively: () => Task.FromResult<AskedNode?>(new AskedNode { Name = "Configured", Answer = "yes" }));
+        toolbox.SelectedNode = toolbox.Document.Project;
+
+        var node = Assert.IsType<AskedNode>(await toolbox.ProjectCommands.AddNodeInteractivelyAsync(type));
+
+        Assert.Equal("yes", node.Answer);
+        Assert.Equal("Configured", node.Name);
+        Assert.Same(node, toolbox.SelectedNode);
+        // Adding without asking still uses the default constructor.
+        Assert.Equal(string.Empty, ((AskedNode)toolbox.ProjectCommands.AddNode(type)!).Answer);
+    }
+
+    [Fact]
+    public async Task AddingInteractively_AddsNothing_WhenTheFactoryIsCanceled()
+    {
+        var toolbox = TestToolbox.Create();
+        var type = toolbox.NodeTypes.Register<AskedNode>("asked", "Asked", Atelier.Controls.MaterialIconKind.Help,
+            createInteractively: () => Task.FromResult<AskedNode?>(null));
+        toolbox.SelectedNode = toolbox.Document.Project;
+
+        Assert.Null(await toolbox.ProjectCommands.AddNodeInteractivelyAsync(type));
+        Assert.Empty(toolbox.Document.Project.Children);
+    }
+
     [Fact]
     public async Task Delete_AsksForNodesWithContent_AndSelectsTheNextSibling()
     {

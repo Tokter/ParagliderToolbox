@@ -26,8 +26,8 @@ public sealed class ParagliderModule : IToolboxModule
     public void Register(Toolbox toolbox)
     {
         toolbox.NodeTypes.Register<ParagliderNode>("paraglider", "Paraglider", MaterialIconKind.Paragliding,
-            category: "Paragliders", description: "Add a paraglider design: generate its model and physics proxy from parameters",
-            defaultKeybinding: "Ctrl+Shift+G");
+            category: "Paragliders", description: "Add a paraglider design from a wing class preset: generate its model and physics proxy from parameters",
+            defaultKeybinding: "Ctrl+Shift+G", createInteractively: () => AskNewParagliderAsync(toolbox));
 
         var actions = _actions = new ParagliderActions(toolbox);
         toolbox.GlobalCommands.Add((ParagliderActions.Group, actions));
@@ -52,5 +52,13 @@ public sealed class ParagliderModule : IToolboxModule
             .Add(MenuRegistry.Tools, () => new MenuItem { DataContext = actions }.Command(actions.ExportLinePlanCommand))
             .Add(MenuRegistry.Tools, () => new Separator())
             .Add(MenuRegistry.Tools, () => new MenuItem { DataContext = actions }.Command(actions.ImportAirfoilCommand));
+    }
+
+    /// <summary>Asks for the wing class, mesh detail and name of a new paraglider; returns it, or <c>null</c> when canceled.</summary>
+    public static async Task<ParagliderNode?> AskNewParagliderAsync(Toolbox toolbox)
+    {
+        var options = new NewParagliderOptions();
+        bool create = await toolbox.Dialogs.ShowDialogAsync("New paraglider", new NewParagliderView(options), "Create", maxWidth: 840);
+        return create ? options.CreateNode() : null;
     }
 }

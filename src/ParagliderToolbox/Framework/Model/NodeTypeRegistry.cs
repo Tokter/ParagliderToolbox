@@ -27,8 +27,14 @@ public sealed class NodeType
     /// <summary>Gets the node class.</summary>
     public Type ClrType { get; }
 
-    /// <summary>Gets the factory of new nodes.</summary>
+    /// <summary>Gets the factory of new nodes (with their defaults, without asking).</summary>
     public Func<ProjectNode> Create { get; }
+
+    /// <summary>
+    /// Gets or sets the factory the Add command uses when users add a node, which may ask how to set it up (e.g. in a
+    /// dialog) and returns <c>null</c> when they cancel; <c>null</c> to use <see cref="Create"/>.
+    /// </summary>
+    public Func<Task<ProjectNode?>>? CreateInteractively { get; init; }
 
     /// <summary>Gets the name shown in menus, e.g. "Folder".</summary>
     public string DisplayName { get; }
@@ -70,9 +76,14 @@ public sealed class NodeTypeRegistry
     /// <param name="description">A short description for tooltips and the command palette.</param>
     /// <param name="isCreatable">Whether users can add nodes of this type.</param>
     /// <param name="defaultKeybinding">A shortcut for adding a node of this type, or <c>null</c>.</param>
+    /// <param name="createInteractively">
+    /// How the Add command creates a node, e.g. after asking for its settings in a dialog; returns <c>null</c> when the
+    /// user cancels. <c>null</c> creates one with the default constructor.
+    /// </param>
     /// <returns>The registered type.</returns>
     public NodeType Register<T>(string id, string displayName, MaterialIconKind icon,
-        string? category = null, string? description = null, bool isCreatable = true, string? defaultKeybinding = null)
+        string? category = null, string? description = null, bool isCreatable = true, string? defaultKeybinding = null,
+        Func<Task<T?>>? createInteractively = null)
         where T : ProjectNode, new() =>
         Register(new NodeType(id, typeof(T), static () => new T(), displayName, icon)
         {
@@ -80,6 +91,7 @@ public sealed class NodeTypeRegistry
             Description = description,
             IsCreatable = isCreatable,
             DefaultKeybinding = defaultKeybinding,
+            CreateInteractively = createInteractively is null ? null : async () => await createInteractively(),
         });
 
     private NodeType Register(NodeType type)

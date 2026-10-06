@@ -8,7 +8,7 @@ using ParagliderToolbox.Paraglider.Texturing;
 namespace ParagliderToolbox.Paraglider;
 
 /// <summary>Options for <see cref="GliderGenerator.Generate"/>.</summary>
-/// <param name="TextureSize">The canopy texture size; 0 uses the design's <see cref="GliderDesign.TextureSize"/>, −1 skips the textures.</param>
+/// <param name="TextureSize">The canopy texture size; 0 uses the size of the design's <see cref="MeshSettings"/>, −1 skips the textures.</param>
 public readonly record struct GenerateOptions(int TextureSize = 0);
 
 /// <summary>A generated paraglider: the high resolution parts, the textures, the line plan and the physics proxy with the skin binding.</summary>
@@ -44,13 +44,14 @@ public static class GliderGenerator
     public static GliderModel Generate(GliderDesign design, GenerateOptions options = default, CancellationToken cancellation = default)
     {
         var watch = Stopwatch.StartNew();
+        var meshSettings = MeshSettings.FromDesign(design);
         var shape = new GliderShape(design);
         var rigging = RiggingLayout.Build(shape);
         cancellation.ThrowIfCancellationRequested();
 
         var canopy = new CanopyBuilder(shape, rigging);
         var parts = new List<MeshPart> { canopy.BuildCanopy() };
-        if (design.GenerateRibs) parts.Add(canopy.BuildRibs());
+        if (meshSettings.Ribs) parts.Add(canopy.BuildRibs());
         cancellation.ThrowIfCancellationRequested();
 
         if (design.GenerateRigging)
@@ -69,7 +70,7 @@ public static class GliderGenerator
         cancellation.ThrowIfCancellationRequested();
 
         TextureImage? baseColor = null, normal = null;
-        int size = options.TextureSize == 0 ? design.TextureSize : options.TextureSize;
+        int size = options.TextureSize == 0 ? meshSettings.TextureSize : options.TextureSize;
         if (size > 0) (baseColor, normal) = CanopyTextureGenerator.Generate(shape, size);
 
         return new GliderModel

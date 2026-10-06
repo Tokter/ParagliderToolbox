@@ -17,20 +17,20 @@ The reference simulator is `ParagliderToolbox.Paraglider.Simulation.GliderSimula
 
 ```jsonc
 {
-  "format": "ParagliderToolbox.Proxy", "formatVersion": 1,
+  "format": "ParagliderToolbox.Proxy", "formatVersion": 2,
   "coordinates": "glTF: meters, +Y up, +Z forward (flight direction), +X pilot's left",
   "complexity": "Medium",
   "nodes":       [ { "id": 0, "name": "S00_LE", "kind": "camber", "position": [x,y,z], "mass": 0.004, "section": 0, "chord": 0, "side": -1 }, ... ],
-  "constraints": [ { "a": 0, "b": 1, "kind": "chordwise", "restLength": 0.05, "compliance": 2e-7, "compressionCompliance": 4e-4,
+  "constraints": [ { "a": 0, "b": 1, "kind": "chordwise", "restLength": 0.05, "compliance": 2e-7, "compressionCompliance": 4e-4, "deflatedCompliance": 0.05,
                      "tensionOnly": false, "name": null, "dragDiameter": 0 }, ... ],
   "sections":    [ { "eta": -1, "chord": 0.73, "leadingEdge": 0, "trailingEdge": 9, "upper": [..], "lower": [..], "stations": [0.065, 0.13, ...] }, ... ],
   "strips":      [ { "sectionA": 0, "sectionB": 1, "area": 0.31, "hasInlet": false, "surface": [i, j, k, ...] }, ... ],
-  "controls":    [ { "name": "BrakeLeft", "constraints": [..], "travel": [..] }, ... ],
+  "controls":    [ { "name": "CollapseLeft", "constraints": [..], "travel": [..], "strips": [..] }, ... ],
   "polar":       { "alphaDegrees": [-180 … 180], "lift": [..], "drag": [..], "moment": [..] },
   "pilot": 492, "pilotDragArea": 0.4, "lineDragCoefficient": 0.95,
   "trimAirspeed": 10.0, "trimFlightPathAngle": 6.0,
   "flatArea": 24, "projectedAspectRatio": 4.48, "inducedAspectRatio": 4.96, "spanEfficiency": 1,
-  "internalPressureCoefficient": 0.75, "inletClosingAlpha": -1.5, "cellPressureTimeConstant": 0.6
+  "internalPressureCoefficient": 0.75, "inletClosingAlpha": -1.5, "cellPressureTimeConstant": 0.6, "cellDeflationTimeConstant": 0.25
 }
 ```
 
@@ -44,6 +44,7 @@ The reference simulator is `ParagliderToolbox.Paraglider.Simulation.GliderSimula
 | `riserTop` | a riser's maillon, where the main lines attach |
 | `carabiner`, `pulley`, `toggle` | the harness connection, the brake pulley, the brake handle |
 | `pilot` | pilot and harness (the heavy node) |
+| `linePoint` | a point along a long line (main lines, and every brake line), so slack lines sag and bow |
 
 `name` is also the joint name in the glTF skin. `section` and `chord` locate canopy nodes.
 
@@ -52,7 +53,14 @@ The reference simulator is `ParagliderToolbox.Paraglider.Simulation.GliderSimula
 Distance constraints for an XPBD solver. `compliance` (m/N) applies when stretched, `compressionCompliance` when
 compressed; **`tensionOnly`** constraints (lines, risers) are skipped while slack. `kind`:
 `chordwise`, `spanwise`, `shear`, `rib` (across the profile, including the diagonal ribs), `bend`, `line`, `riser`,
-`harness` (rigid pilot/carabiner/pulley frame). Lines carry `name` (e.g. "A main L1") and `dragDiameter`.
+`harness` (rigid pilot/carabiner/pulley frame; the maillons of a side), `hand` (the pilot's hand holding a toggle:
+its distances to the pilot and both carabiners, which the brakes change). Lines carry `name` (e.g. "A main L1";
+all segments of a line share it) and `dragDiameter`.
+
+**`deflatedCompliance`** (canopy constraints of a double-surface proxy): an inflated cell holds its shape, an empty one
+is limp fabric. The solver blends the compliance against compression (and for `bend` in both directions) from
+`compressionCompliance` when the cells around the constraint are inflated to `deflatedCompliance` when they are empty
+(see *Fabric firmness* below). 0 means it doesn't depend on the pressure (single-surface proxies, the leading edge rods).
 
 ### Sections and strips
 
@@ -63,11 +71,20 @@ cancels between neighbors.
 
 ### Controls
 
-Each control shortens its constraints' rest lengths by `travel[i] × input` (input 0…1):
-`BrakeLeft`, `BrakeRight` (brake lines at the pulley, including the slack), `SpeedBar` (A/B risers),
-`CollapseLeft`, `CollapseRight` (outer A lines: asymmetric collapse), `Frontal` (all A lines), `BigEarsLeft`,
-`BigEarsRight` (outermost A lines). Weight shift lengthens one pilot–carabiner harness constraint and shortens the
-other (±12% in the reference simulator).
+Each control shortens its constraints' rest lengths by `travel[i] × input` (input 0…1; a negative travel lengthens),
+never below 5% of the rest length:
+
+- `BrakeLeft`, `BrakeRight`: the brake main lines (all their segments, by length; the travel includes the slack the
+  lines have at rest) and the side's three `hand` constraints, which move the toggle from below the pulley down along
+  the brake line to the hip.
+- `SpeedBar`: shortens the front risers (A by the design's speed bar travel, the rows behind proportionally less, the
+  last not at all) and lengthens the maillon links between them accordingly.
+- `CollapseLeft`, `CollapseRight`: the A lines holding the outer half of the half span, each by the share of the
+  canopy it holds there; `BigEarsLeft`, `BigEarsRight`: the same for the outer quarter; `Frontal`: all A lines.
+- **`strips`**: the cells whose inlets the control closes, by its input. A pulled A line folds the leading edge under,
+  which strip aerodynamics can't resolve; the cells it holds empty while it is pulled.
+
+Weight shift lengthens one pilot–carabiner harness constraint and shortens the other (±12% in the reference simulator).
 
 ## Simulation algorithm
 
@@ -82,8 +99,8 @@ Per frame (e.g. 1/60 s), `substeps` times (16 for Medium; more for High):
 2. **Integrate**: `v += F/m · h`, `x_prev = x`, `x += v · h`.
 3. **Solve** each constraint once, in a fixed order (alternating the order every substep makes stiff networks
    oscillate): `C = |a−b| − rest`; skip if `C < 0` and tension-only;
-   `α̃ = (C < 0 ? compressionCompliance : compliance) / h²`; `λ = −C / (wₐ + w_b + α̃)`;
-   `a += wₐ·λ·n`, `b −= w_b·λ·n` with `n = (a−b)/|a−b|`, `w = 1/m`.
+   `α = C < 0 ? compressionCompliance : compliance`, blended with `deflatedCompliance` by the fabric firmness (below);
+   `α̃ = α / h²`; `λ = −C / (wₐ + w_b + α̃)`; `a += wₐ·λ·n`, `b −= w_b·λ·n` with `n = (a−b)/|a−b|`, `w = 1/m`.
 4. **Velocities**: `v = (x − x_prev)/h`; damp only the motion relative to the center of mass.
 5. Keep the glider near the origin (shift all positions, accumulate the offset in double precision): far from the
    origin floats lose the precision the stiff constraints need and the solver gains energy.
@@ -113,12 +130,40 @@ For each strip (sections A and B):
 
 ### Cell pressure (ram air)
 
-Each strip's pressure `p` (−0.25 sucked in … 1 inflated) moves toward a target with `cellPressureTimeConstant`:
-target 1 while the strip has an inlet and `inletClosingAlpha < α < 100°` (and V > 2 m/s), otherwise −0.25; tip
-cells without an inlet fill from their neighbors; cross-vents even out neighbors (exchange with a 0.8 s time
-constant). The pressure force on each `surface` triangle is
-`p · internalPressureCoefficient · ½ρV² · (area-weighted outward normal)`, a third to each corner. Without pressure the
-cell folds under the line and air loads: that is how tucks and collapses happen, and how cells refill and reopen.
+Each strip's pressure `p` (−0.25 sucked in … 1 inflated) moves toward a target: with `cellDeflationTimeConstant`
+when it falls, and with `cellPressureTimeConstant · clamp(10 / V, 0.5, 3)` when it rises (the inlet takes in more air
+faster). The target of a cell with an inlet (and V > 2 m/s) depends on the **inlet's angle of attack** `α_inlet`: the
+strip's `α` corrected by how far the nose has turned against the rest of the profile (the direction from the leading
+edge to the first nodes behind it, compared with the rest pose), so a nose folded under closes the inlet even when the
+rest of the cell still looks like a profile:
+
+| `α_inlet` | target |
+|---|---|
+| below `inletClosingAlpha − 3°` | −0.25 (flow over the nose: sucked empty) |
+| up to `inletClosingAlpha` | ramps to 1 |
+| up to 35° | 1 |
+| 35° … 60° | ramps to 0.35 (deep stall: the flow from below meets the inlets side-on) |
+| 60° … 110° | 0.35 |
+| 110° … 150° | ramps to −0.25 (flow from behind) |
+
+The target is scaled by how open the inlet is: the profile height just behind the nose relative to its rest height
+(closed below 25%, open above 75%, smoothstep between). A control closing the strip (pulled A lines) blends the target
+toward −0.25 by its input. Tip cells without an inlet fill from their neighbors; cross-vents even out neighbors
+(exchange with a 0.8 s time constant). The pressure force on each `surface` triangle is
+`p · internalPressureCoefficient · ½ρV² · (area-weighted outward normal)`, a third to each corner.
+
+### Fabric firmness
+
+Pressure is what makes fabric a wing. Per strip, every substep:
+
+- `inflation = smoothstep((p − 0.15) / 0.7)`: limp below about a sixth of the full pressure, fully firm from 85%;
+- `stiffening = clamp((½ρV² / ½ρV_trim²)^0.25, 0.5, 4)`: the internal pressure follows the dynamic pressure.
+
+A canopy node takes the mean of the strips on either side of its section; a constraint the mean of its two nodes. The
+compliance of a constraint with `deflatedCompliance` (against compression, and for `bend` in both directions) is then
+`exp(f·ln(α/stiffening) + (1−f)·ln(deflatedCompliance))` with `f` = inflation: a geometric blend, so a half-inflated
+cell is noticeably soft. Empty cells fold under the line and air loads: that is how tucks, collapses, big ears and the
+horseshoe of a full stall happen, and how cells refill and reopen.
 
 ## Driving the high resolution model
 

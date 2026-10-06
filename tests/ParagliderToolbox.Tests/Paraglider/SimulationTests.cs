@@ -2,6 +2,7 @@ using System.Numerics;
 using ParagliderToolbox.Paraglider;
 using ParagliderToolbox.Paraglider.Design;
 using ParagliderToolbox.Paraglider.Simulation;
+using ParagliderToolbox.Paraglider.Proxy;
 
 namespace ParagliderToolbox.Tests.Paraglider;
 
@@ -70,7 +71,8 @@ public class SimulationTests
         sim.Inputs.SpeedBar = 1;
         Average(sim, 6);
         var (fast, _) = Average(sim, 4);
-        Assert.True(fast > trimSpeed + 1.0f, $"{fast} vs {trimSpeed}");
+        // About 15 km/h more with 12 cm of speed bar travel, as on an EN-B wing.
+        Assert.True(fast > trimSpeed + 10 / 3.6f, $"{fast * 3.6f} vs {trimSpeed * 3.6f} km/h");
     }
 
     [Fact]
@@ -105,5 +107,141 @@ public class SimulationTests
         Assert.True(sim.PilotPosition.Length() < 40, $"local {sim.PilotPosition}");
         Assert.True(sim.Origin.Z > 200, $"flew {sim.Origin.Z} m forward");
         Assert.All(sim.Positions.ToArray(), p => Assert.False(float.IsNaN(p.X)));
+    }
+
+    // Pulls an input in over a third of a second, as the app does.
+    private static void Ramp(GliderSimulator sim, Action<float> set)
+    {
+        for (int i = 1; i <= 20; i++)
+        {
+            set(i / 20f);
+            sim.Step(1 / 60f);
+        }
+    }
+
+    private static float CanopyWidth(GliderSimulator sim)
+    {
+        var sections = sim.Model.Sections;
+        return Vector3.Distance(sim.Positions[sections[0].LeadingEdge], sim.Positions[sections[^1].LeadingEdge]);
+    }
+
+    [Fact]
+    public void BrakeHandles_MoveDownWithTheBrakes()
+    {
+        var sim = Simulator();
+        Average(sim, 6);
+        int toggle = sim.Model.FindNode("Toggle_L")!.Id;
+        float rest = sim.Positions[toggle].Y - sim.PilotPosition.Y;
+
+        Ramp(sim, b => sim.Inputs.BrakeLeft = b * 0.6f);
+        Average(sim, 2);
+        float pulled = sim.Positions[toggle].Y - sim.PilotPosition.Y;
+
+        // Slack plus 60 % of the travel, mostly downward.
+        Assert.True(rest - pulled > 0.3f, $"the toggle moved {rest - pulled:F2} m down");
+    }
+
+    [Fact]
+    public void BrakeLines_HangSlackHandsUp_AndBowBack()
+    {
+        var sim = Simulator();
+        Average(sim, 8);
+        var model = sim.Model;
+        // Hands up, the brake lines from each trailing edge tab down to the pulley are longer than the straight distance:
+        // they hang slack and bow back in the airflow.
+        int pulley = model.FindNode("Pulley_L")!.Id;
+        var brake = model.Constraints.Where(c => c.Kind == ConstraintKind.Line && c.Name is { } n && n.StartsWith("Brake")).ToList();
+        var tabs = brake.SelectMany(c => new[] { c.A, c.B }).Where(i => model.Nodes[i].Section >= 0 && model.Nodes[i].Side > 0).Distinct().ToList();
+        Assert.NotEmpty(tabs);
+        foreach (int tab in tabs)
+        {
+            // Down the cascade: at each node the line toward the pulley (its other end is nearer the pulley at rest).
+            float path = 0;
+            int node = tab;
+            for (int guard = 0; node != pulley && guard < 20; guard++)
+            {
+                float Rest(int i) => Vector3.Distance(model.Nodes[i].Position, model.Nodes[pulley].Position);
+                var down = brake.Where(c => c.A == node || c.B == node).OrderBy(c => Rest(c.A == node ? c.B : c.A)).First();
+                int next = down.A == node ? down.B : down.A;
+                path += Vector3.Distance(sim.Positions[node], sim.Positions[next]);
+                node = next;
+            }
+            float straight = Vector3.Distance(sim.Positions[tab], sim.Positions[pulley]);
+            Assert.True(path > straight + 0.05f, $"{model.Nodes[tab].Name}: path {path:F2} m, straight {straight:F2} m");
+        }
+    }
+
+    [Fact]
+    public void AsymmetricCollapse_FoldsOneSide_AndTheWingRecovers()
+    {
+        var sim = Simulator();
+        Average(sim, 10);
+        float width = CanopyWidth(sim);
+
+        Ramp(sim, c => sim.Inputs.CollapseLeft = c);
+        Average(sim, 0.5f);
+        var pressure = sim.CellPressure.ToArray();
+        // The left (positive η) outer cells are empty, the right ones full, and the span is shorter.
+        Assert.True(pressure[^1] < 0.3f, $"left tip {pressure[^1]}");
+        Assert.True(pressure[0] > 0.8f, $"right tip {pressure[0]}");
+        Assert.True(CanopyWidth(sim) < width - 1, $"width {CanopyWidth(sim)} vs {width}");
+
+        sim.Inputs.CollapseLeft = 0;
+        Average(sim, 10);
+        Assert.True(sim.CellPressure.ToArray().Average() > 0.9f, "the cells refill");
+        Assert.True(CanopyWidth(sim) > width - 0.5f, "the wing opens again");
+    }
+
+    [Fact]
+    public void BigEars_FoldTheTips_AndSinkFaster()
+    {
+        var sim = Simulator();
+        Average(sim, 10);
+        var (_, trimSink) = Average(sim, 4);
+        float width = CanopyWidth(sim);
+
+        Ramp(sim, e => sim.Inputs.BigEars = e);
+        Average(sim, 4);
+        var (_, earsSink) = Average(sim, 4);
+        var pressure = sim.CellPressure.ToArray();
+
+        Assert.True(pressure[0] < 0.3f && pressure[^1] < 0.3f, "both tips are empty");
+        Assert.True(pressure[pressure.Length / 2] > 0.9f, "the center flies on");
+        Assert.True(CanopyWidth(sim) < width - 1, $"width {CanopyWidth(sim)} vs {width}");
+        Assert.True(earsSink > trimSink + 0.3f, $"sink {earsSink} vs {trimSink}");
+    }
+
+    [Fact]
+    public void FrontalCollapse_FoldsTheSpan()
+    {
+        var sim = Simulator();
+        Average(sim, 10);
+        float width = CanopyWidth(sim), narrowest = width;
+        Ramp(sim, f => sim.Inputs.Frontal = f);
+        for (int i = 0; i < 90; i++)
+        {
+            if (i == 20) sim.Inputs.Frontal = 0;
+            sim.Step(1 / 60f);
+            narrowest = Math.Min(narrowest, CanopyWidth(sim));
+        }
+        // A fabric wing folds along the span (the tips come forward and together), not just pitches like a rigid one.
+        Assert.True(narrowest < width * 0.75f, $"narrowest {narrowest} of {width}");
+    }
+
+    [Fact]
+    public void FullStall_SoftensTheCanopy_AndItRecovers()
+    {
+        var sim = Simulator();
+        Average(sim, 10);
+        Ramp(sim, b => sim.Inputs.BrakeLeft = sim.Inputs.BrakeRight = b);
+        Average(sim, 5);
+        Assert.True(sim.CellPressure.ToArray().Average() < 0.6f, "the stalled cells lose pressure");
+
+        Ramp(sim, b => sim.Inputs.BrakeLeft = sim.Inputs.BrakeRight = 1 - b);
+        Average(sim, 10);
+        var (airspeed, sink) = Average(sim, 6);
+        Assert.InRange(sim.CenterAngleOfAttack, 3, 15);
+        Assert.InRange(airspeed * 3.6f, 25, 50);
+        Assert.InRange(sink, 0.5f, 3f);
     }
 }

@@ -50,7 +50,7 @@ public sealed partial class ProjectCommands : ObservableObject
         {
             KeybindingManager.RegisterOrUpdateKeybinding(new KeybindingDescriptor(
                 AddCommandName(type), Group, type.DefaultKeybinding ?? string.Empty,
-                new AtelierRelayCommand(() => AddNode(type), () => CanAddNode(type)),
+                new AtelierRelayCommand(() => _ = AddNodeInteractivelyAsync(type), () => CanAddNode(type)),
                 label: $"Add {type.DisplayName.ToLowerInvariant()}",
                 description: type.Description ?? $"Add a {type.DisplayName.ToLowerInvariant()} to the project",
                 icon: type.Icon.ToString()));
@@ -77,12 +77,26 @@ public sealed partial class ProjectCommands : ObservableObject
     /// <summary>Returns whether a node of <paramref name="type"/> can be added at the selection.</summary>
     public bool CanAddNode(NodeType type) => TargetFor(type) != null;
 
-    /// <summary>Adds a node of <paramref name="type"/> at the selection (see <see cref="TargetFor"/>) and selects it.</summary>
+    /// <summary>Adds a node of <paramref name="type"/> with its defaults at the selection (see <see cref="TargetFor"/>) and selects it.</summary>
     /// <returns>The new node, or <c>null</c> when it can't be added.</returns>
-    public ProjectNode? AddNode(NodeType type)
+    public ProjectNode? AddNode(NodeType type) => TargetFor(type) is { } parent ? Add(parent, type, type.Create()) : null;
+
+    /// <summary>
+    /// Adds a node of <paramref name="type"/> the way the Add command does: through the type's
+    /// <see cref="NodeType.CreateInteractively"/> factory (which may ask for its settings) when it has one.
+    /// </summary>
+    /// <returns>The new node, or <c>null</c> when it can't be added or the user canceled.</returns>
+    public async Task<ProjectNode?> AddNodeInteractivelyAsync(NodeType type)
     {
-        if (TargetFor(type) is not { } parent) return null;
-        var node = type.Create();
+        if (type.CreateInteractively is null) return AddNode(type);
+        if (TargetFor(type) is null) return null;
+        var node = await type.CreateInteractively();
+        // The selection may have moved while the factory asked.
+        return node != null && TargetFor(type) is { } parent ? Add(parent, type, node) : null;
+    }
+
+    private ProjectNode Add(ProjectNode parent, NodeType type, ProjectNode node)
+    {
         node.Name = UniqueName(parent, string.IsNullOrWhiteSpace(node.Name) ? type.DisplayName : node.Name);
         parent.Children.Add(node);
         Toolbox.SelectedNode = node;

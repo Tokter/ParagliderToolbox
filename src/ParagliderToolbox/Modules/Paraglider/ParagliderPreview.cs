@@ -10,6 +10,7 @@ using Atelier.Graphics3D;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using ParagliderToolbox.Paraglider;
+using ParagliderToolbox.Paraglider.Design;
 using ParagliderToolbox.Paraglider.Export;
 using ParagliderToolbox.Paraglider.Geometry;
 using ParagliderToolbox.Paraglider.Proxy;
@@ -58,7 +59,7 @@ public sealed partial class ParagliderPreview : ObservableObject, IDisposable
     private readonly GamepadPilot _gamepad = new();
     private double _lastFrame;
     private float _pending;
-    private readonly Dictionary<string, float> _releaseAt = [];
+    private readonly Dictionary<string, (float Start, float Until)> _releaseAt = [];
     private (double X, double Y, double Z) _recordOrigin;
     private readonly List<float> _recordTimes = [];
     private readonly List<Vector3[]> _recordFrames = [];
@@ -128,7 +129,7 @@ public sealed partial class ParagliderPreview : ObservableObject, IDisposable
         Task.Run(async () =>
         {
             await Task.Delay(120, cancellation.Token);
-            var model = GliderGenerator.Generate(design, new GenerateOptions(PreviewTextureSize), cancellation.Token);
+            var model = GliderGenerator.Generate(design, new GenerateOptions(Math.Min(PreviewTextureSize, MeshSettings.FromDesign(design).TextureSize)), cancellation.Token);
             Dispatcher.Post(() =>
             {
                 if (cancellation.IsCancellationRequested || _disposed) return;
@@ -213,6 +214,7 @@ public sealed partial class ParagliderPreview : ObservableObject, IDisposable
         var lines = Get(GliderMaterial.Lines);
         lines.BaseColor = Color.FromRgb(255, 255, 255);
         lines.Roughness = 0.6f;
+        lines.DoubleSided = true; // low poly lines are flat ribbons
 
         var risers = Get(GliderMaterial.Risers);
         risers.BaseColor = Color.FromRgb(0x26, 0x32, 0x38);
@@ -432,7 +434,7 @@ public sealed partial class ParagliderPreview : ObservableObject, IDisposable
     {
         if (!IsSimulating) StartSimulation();
         if (_simulator is null) return;
-        _releaseAt[input] = _simulator.Time + seconds;
+        _releaseAt[input] = (_simulator.Time, _simulator.Time + seconds);
     }
 
     #endregion
@@ -586,7 +588,9 @@ public sealed partial class ParagliderPreview : ObservableObject, IDisposable
         for (int i = 0; i < target.Length; i++) target[i] = positions[i] + offset;
     }
 
-    private float Active(string input, float time) => _releaseAt.TryGetValue(input, out float until) && time < until ? 1 : 0;
+    // The pilot pulls lines in over a third of a second (a step would yank the canopy around), and lets go at once.
+    private float Active(string input, float time) =>
+        _releaseAt.TryGetValue(input, out var pulse) && time < pulse.Until ? Math.Clamp((time - pulse.Start) / 0.3f + 0.05f, 0, 1) : 0;
 
     private void Record(GliderSimulator sim)
     {

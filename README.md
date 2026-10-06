@@ -32,6 +32,16 @@ Tools for paraglider simulation and games, built with the [Atelier](https://gith
 Add a paraglider (Ctrl+Shift+G, or Edit > Add) and shape it in the properties; the detail view regenerates the model
 as you edit (a few hundred milliseconds) and can fly it.
 
+Adding a paraglider asks for a starting point:
+
+- **Wing class**: EN-A (school, aspect ratio 4.9, 40 cells), low EN-B (5.3, 48 cells), high EN-B (5.9, 58 cells), EN-C
+  (two-liner, 6.3, 66 cells) or EN-D (two-liner, 6.9, 78 cells). Each preset sets every design parameter after current
+  production wings of its class: planform and arc, profile thickness, shark nose and reflex, line rows, cascades and
+  diameters, brake travel, pilot harness drag.
+- **Model detail**: Low poly (a few hundred triangles for games: skin panels spanning several cells, lines as ribbons,
+  a 1024 texture), Medium (tens of thousands for real time) or High (hundreds of thousands for renders). It can be
+  changed later (Mesh > Detail), and editing any mesh setting makes it Custom.
+
 - **Design parameters**, in the order of the design steps:
   - **Planform**: flat area, aspect ratio and span, chord distribution curve, straight chord line, leading edge sweep.
   - **Arc**: tip angle or a projected span ratio to solve for, the arc distribution, tip cant, washout and its axis.
@@ -42,22 +52,25 @@ as you edit (a few hundred milliseconds) and can fly it.
   - **Cells**: cell count, width distribution, mini-ribs, cross-vents, diagonal ribs.
   - **Ballooning**: amount and chordwise distribution, lower surface factor, seam creases, tab wrinkles, trailing edge
     gathering.
-  - **Rigging**: 3 or 4 rows and their positions, tab and brake tab spacing, cascades, line diameters, carabiner
+  - **Rigging**: 2, 3 or 4 rows and their positions, tab and brake tab spacing, cascades, line diameters, carabiner
     position and spacing, risers, brake slack and travel, trim.
   - **Appearance**: pattern, colors, brand text, texture size, fabric translucency.
   - **Physics proxy**: complexity from Arcade to High, or custom settings; masses and drag.
-  - **Mesh**: resolution, ribs, rigging.
+  - **Mesh**: detail (Low poly, Medium, High or Custom), resolution, cells per segment, ribs, rigging, line and hardware detail.
 - Distributions are curves: drag their points in the curve editor (Edit… next to the curve).
 - **High resolution model** (about 240k triangles by default): ballooned skin with seam creases, wrinkles and a gathered
   trailing edge, air inlets with sagging rims, internal ribs with cross-vents, mini-ribs and diagonal ribs, tip panels,
   the line cascades as tubes in their row colors, risers, maillons, brake pulleys and toggles, carabiners; procedural
   base color and normal map textures (pattern, panel seams, stitching, tapes, ripstop, brand text).
 - **Physics proxy**: mass points on the upper and lower surface (or the camber surface), fabric, rib and bending
-  constraints, tension-only lines, risers and the pilot, aerodynamic strips with ram-air pressure cells, the section polar
-  and the pilot's controls. The high resolution model is skinned to it.
-- **Simulation** in the detail view (P): trim glide, brakes, speed bar, weight shift, asymmetric and frontal collapses,
-  big ears, gusts, stalls and spins, with the high resolution model following the proxy. Record a flight (Ctrl+R) and
-  export it as an animation.
+  constraints, tension-only lines that sag and bow when slack, risers, the pilot and the pilot's hands on the brake
+  toggles, aerodynamic strips with ram-air pressure cells, the section polar and the pilot's controls. The high
+  resolution model is skinned to it.
+- **Simulation** in the detail view (P): trim glide, brakes (the toggles move down to the hips), speed bar, weight
+  shift, asymmetric and frontal collapses, big ears, gusts, stalls and spins, with the high resolution model following
+  the proxy. The canopy is fabric held in shape by its pressure: empty cells go limp, so collapses fold the canopy under,
+  big ears fold the tips, a frontal folds the span into a horseshoe and a full stall crumples it; it reopens as the cells
+  refill. Record a flight (Ctrl+R) and export it as an animation.
 
   | Simulation: an asymmetric collapse | The physics proxy the high resolution model is skinned to |
   |---|---|

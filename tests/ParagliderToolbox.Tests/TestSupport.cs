@@ -67,6 +67,9 @@ public sealed class FakeDialogs : IShellDialogs
     public bool EditAnswer { get; set; } = true;
     public Action<object>? EditAction { get; set; }
     public Task<bool> EditPropertiesAsync(string title, object target, string confirmText, string? message = null) { Asked.Add($"Edit:{title}"); EditAction?.Invoke(target); return Task.FromResult(EditAnswer); }
+    public bool DialogAnswer { get; set; } = true;
+    public Action<Atelier.Core.Tree.UIElement>? DialogAction { get; set; }
+    public Task<bool> ShowDialogAsync(string title, Atelier.Core.Tree.UIElement content, string confirmText, float maxWidth = 640) { Asked.Add($"Dialog:{title}"); DialogAction?.Invoke(content); return Task.FromResult(DialogAnswer); }
     public void ShowCommandPalette() => Asked.Add("Palette");
     public void ShowKeybindingEditor() => Asked.Add("Keybindings");
     public void ResetLayout() => Asked.Add("ResetLayout");

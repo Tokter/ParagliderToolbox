@@ -45,6 +45,22 @@ public enum ProxyComplexity
     Custom,
 }
 
+/// <summary>Preset levels of detail of the generated model (see <see cref="MeshSettings"/>).</summary>
+public enum MeshDetail
+{
+    /// <summary>
+    /// A few hundred triangles for games: skin panels spanning several cells without ballooning or inlets, no ribs,
+    /// lines as flat ribbons, simple hardware, a small texture.
+    /// </summary>
+    LowPoly,
+    /// <summary>Tens of thousands of triangles for real-time use: ballooned cells, ribs, coarse line tubes.</summary>
+    Medium,
+    /// <summary>Hundreds of thousands of triangles for renders and close-ups.</summary>
+    High,
+    /// <summary>The mesh settings as given.</summary>
+    Custom,
+}
+
 /// <summary>
 /// Every parameter of a paraglider design: planform, arc, airfoil, cells, ballooning, rigging, appearance, the physics
 /// proxy and the mesh resolution. The generator reads a snapshot of it (see <see cref="Clone"/>).
@@ -234,7 +250,7 @@ public sealed class GliderDesign
 
     #region Rigging
 
-    /// <summary>Gets or sets the number of line rows (3 = A, B, C; 4 = A, B, C, D).</summary>
+    /// <summary>Gets or sets the number of line rows (2 = A, B for two-liners; 3 = A, B, C; 4 = A, B, C, D).</summary>
     public int RowCount { get; set; } = 3;
 
     /// <summary>Gets or sets the chord position of the A row.</summary>
@@ -243,7 +259,7 @@ public sealed class GliderDesign
     /// <summary>Gets or sets the chord position of the B row.</summary>
     public double RowB { get; set; } = 0.36;
 
-    /// <summary>Gets or sets the chord position of the C row.</summary>
+    /// <summary>Gets or sets the chord position of the C row (with three or four rows).</summary>
     public double RowC { get; set; } = 0.62;
 
     /// <summary>Gets or sets the chord position of the D row (only with four rows).</summary>
@@ -284,6 +300,12 @@ public sealed class GliderDesign
 
     /// <summary>Gets or sets the brake travel from the end of the slack to full brakes (m), about 0.6–0.7 for EN-B wings.</summary>
     public double BrakeTravel { get; set; } = 0.65;
+
+    /// <summary>
+    /// Gets or sets how much the speed bar shortens the A risers at full travel (m): about 0.1 for school wings, 0.12–0.14
+    /// for EN-B, 0.16–0.2 for competition wings. The rows behind follow proportionally less; the last row stays.
+    /// </summary>
+    public double SpeedBarTravel { get; set; } = 0.12;
 
     /// <summary>Gets or sets the angle of attack of the center chord in trim flight (degrees).</summary>
     public double TrimAngleOfAttack { get; set; } = 7.5;
@@ -328,7 +350,7 @@ public sealed class GliderDesign
     /// <summary>Gets or sets the text printed on the lower surface, empty for none.</summary>
     public string BrandText { get; set; } = "TOOLBOX";
 
-    /// <summary>Gets or sets the size of the canopy textures (pixels along the span).</summary>
+    /// <summary>Gets or sets the size of the canopy textures (pixels along the span) with <see cref="MeshDetail.Custom"/>.</summary>
     public int TextureSize { get; set; } = 4096;
 
     /// <summary>Gets or sets how translucent the fabric is when backlit (0–1).</summary>
@@ -338,20 +360,39 @@ public sealed class GliderDesign
 
     #region Mesh
 
-    /// <summary>Gets or sets the number of mesh segments across each cell.</summary>
+    /// <summary>
+    /// Gets or sets the level of detail of the generated model; <see cref="MeshDetail.Custom"/> (the default of a new
+    /// design, whose settings below are the <see cref="MeshDetail.High"/> ones) uses the settings below. See
+    /// <see cref="MeshSettings.FromDesign"/>.
+    /// </summary>
+    public MeshDetail MeshDetail { get; set; } = MeshDetail.Custom;
+
+    /// <summary>Gets or sets the number of mesh segments across each cell (Custom, with one cell per segment).</summary>
     public int SpanwiseSegmentsPerCell { get; set; } = 10;
 
-    /// <summary>Gets or sets the number of mesh segments along each of the upper and lower surface.</summary>
+    /// <summary>
+    /// Gets or sets how many cells one skin segment spans (Custom): 1 builds every cell with its ballooning; more builds a
+    /// low poly skin between every n-th rib, without ballooning and inlets.
+    /// </summary>
+    public int CellsPerSegment { get; set; } = 1;
+
+    /// <summary>Gets or sets the number of mesh segments along each of the upper and lower surface (Custom).</summary>
     public int ChordwiseSegments { get; set; } = 110;
 
-    /// <summary>Gets or sets whether the internal ribs (with cross-vents, mini and diagonal ribs) are generated.</summary>
+    /// <summary>Gets or sets whether the internal ribs (with cross-vents, mini and diagonal ribs) are generated (Custom).</summary>
     public bool GenerateRibs { get; set; } = true;
 
     /// <summary>Gets or sets whether the suspension lines, risers, brake lines and toggles are generated.</summary>
     public bool GenerateRigging { get; set; } = true;
 
-    /// <summary>Gets or sets the number of sides of the line tubes.</summary>
+    /// <summary>Gets or sets the number of sides of the line tubes (Custom); 2 draws each line as a flat ribbon.</summary>
     public int LineSides { get; set; } = 6;
+
+    /// <summary>Gets or sets the length of the segments along the lines (m, Custom); 0 draws each line as one straight segment.</summary>
+    public double LineSegmentLength { get; set; } = 0.5;
+
+    /// <summary>Gets or sets the segments around the maillons, pulleys and carabiners (Custom); below 6 draws simple low poly shapes.</summary>
+    public int HardwareSegments { get; set; } = 24;
 
     #endregion
 
@@ -399,7 +440,12 @@ public sealed class GliderDesign
     public GliderDesign Clone() => (GliderDesign)MemberwiseClone();
 
     /// <summary>Gets the line row chord positions in use (A first).</summary>
-    public double[] RowPositions => RowCount >= 4 ? [RowA, RowB, RowC, RowD] : [RowA, RowB, RowC];
+    public double[] RowPositions => RowCount switch
+    {
+        <= 2 => [RowA, RowB],
+        3 => [RowA, RowB, RowC],
+        _ => [RowA, RowB, RowC, RowD],
+    };
 
     /// <summary>The default chord distribution: elliptical-like with a 0.3 tip chord.</summary>
     public static Curve DefaultChord { get; } = new(0, 1, 0.3, 0.975, 0.5, 0.925, 0.7, 0.82, 0.85, 0.67, 0.95, 0.49, 1, 0.3);

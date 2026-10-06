@@ -368,6 +368,18 @@ public sealed class MainView : KeybindingHandler, IShellDialogs
     }
 
     /// <inheritdoc/>
+    public async Task<bool> ShowDialogAsync(string title, UIElement content, string confirmText, float maxWidth = 640)
+    {
+        var response = await new Dialog(title)
+            .Content(content)
+            .AddButton("Cancel", DialogResult.Cancel, isCancel: true)
+            .AddButton(confirmText, DialogResult.Ok, isDefault: true, variant: ButtonVariant.Filled)
+            .MaxWidth(maxWidth)
+            .ShowAsync(this);
+        return response.Result == DialogResult.Ok;
+    }
+
+    /// <inheritdoc/>
     public void ShowCommandPalette() =>
         CommandPalette.Show(this, c => !(c.Descriptor.Group == ShellViewModel.Group && c.Descriptor.Name == "CommandPalette"));
 

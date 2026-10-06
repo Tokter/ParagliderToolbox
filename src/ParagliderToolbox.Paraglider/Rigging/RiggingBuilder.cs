@@ -7,8 +7,15 @@ namespace ParagliderToolbox.Paraglider.Rigging;
 /// Builds the meshes of the rigging: the suspension and brake lines as tubes, the riser webbing, the maillons, pulleys
 /// and carabiners, and the brake toggles. Every vertex is bound to the rigging points it lies between.
 /// </summary>
+/// <remarks>
+/// The <see cref="Design.MeshSettings"/> set the detail: tubes with rings every
+/// <see cref="Design.MeshSettings.LineSegmentLength"/> (or one straight segment), flat ribbons for two sides, and tori
+/// or, for low poly, small diamonds for the hardware and a box for each toggle.
+/// </remarks>
 public sealed class RiggingBuilder(RiggingLayout layout, Design.GliderDesign design)
 {
+    private readonly Design.MeshSettings _settings = Design.MeshSettings.FromDesign(design);
+
     /// <summary>The line colors by row (A, B, C, D) in linear RGB; brakes use <see cref="BrakeColor"/>.</summary>
     public static readonly Vector4[] RowColors =
     [
@@ -25,13 +32,16 @@ public sealed class RiggingBuilder(RiggingLayout layout, Design.GliderDesign des
     public MeshPart BuildLines()
     {
         var part = new MeshPart("Lines", GliderMaterial.Lines);
-        int sides = Math.Clamp(design.LineSides, 3, 16);
+        int sides = Math.Clamp(_settings.LineSides, 2, 16);
         foreach (var line in layout.Lines)
         {
             if (line.Level == LineLevel.Riser) continue;
             var color = line.Row == RiggingLayout.BrakeRow ? BrakeColor : RowColors[Math.Min(line.Row, RowColors.Length - 1)];
             float radius = (float)(line.Diameter / 2000 * Math.Max(1, design.LineDisplayScale));
-            AddTube(part, layout.Points[line.Upper], layout.Points[line.Lower], radius, sides, color);
+            var a = layout.Points[line.Upper];
+            var b = layout.Points[line.Lower];
+            if (sides == 2) AddRibbon(part, a, b, radius, _settings.LineSegmentLength, color);
+            else AddTube(part, a, b, radius, sides, _settings.LineSegmentLength, color);
         }
         part.ComputeNormals();
         return part;
@@ -55,18 +65,16 @@ public sealed class RiggingBuilder(RiggingLayout layout, Design.GliderDesign des
         var part = new MeshPart("Hardware", GliderMaterial.Metal);
         foreach (var point in layout.Points)
         {
-            switch (point.Kind)
+            var (radius, tube, stretch) = point.Kind switch
             {
-                case RigPointKind.RiserTop:
-                    AddRing(part, point, Vector3.UnitX, 0.011f, 0.0022f, stretch: 1.5f);
-                    break;
-                case RigPointKind.Pulley:
-                    AddRing(part, point, Vector3.UnitX, 0.012f, 0.004f, stretch: 1f);
-                    break;
-                case RigPointKind.Carabiner:
-                    AddRing(part, point, Vector3.UnitX, 0.035f, 0.0055f, stretch: 1.6f);
-                    break;
-            }
+                RigPointKind.RiserTop => (0.011f, 0.0022f, 1.5f),
+                RigPointKind.Pulley => (0.012f, 0.004f, 1f),
+                RigPointKind.Carabiner => (0.035f, 0.0055f, 1.6f),
+                _ => (0f, 0f, 0f),
+            };
+            if (radius <= 0) continue;
+            if (_settings.SimpleHardware) AddDiamond(part, point, radius + tube, stretch);
+            else AddRing(part, point, Vector3.UnitX, radius, tube, stretch, _settings.HardwareSegments);
         }
         part.ComputeNormals();
         return part;
@@ -78,25 +86,60 @@ public sealed class RiggingBuilder(RiggingLayout layout, Design.GliderDesign des
         var part = new MeshPart("Toggles", GliderMaterial.Toggles);
         foreach (var toggle in layout.Points.Where(p => p.Kind == RigPointKind.Toggle))
         {
-            AddRing(part, toggle, Vector3.UnitX, 0.018f, 0.004f, stretch: 1.2f);
             // The grip hangs below the loop, toward the pilot's hand.
             var top = toggle.Position - new Vector3(0, 0.02f, 0);
             var bottom = top - new Vector3(0, 0.11f, 0);
-            AddCylinder(part, top, bottom, 0.0135f, 12, toggle.Id);
+            if (_settings.SimpleHardware)
+            {
+                AddBox(part, (toggle.Position + bottom) / 2, new Vector3(0.014f, 0.075f, 0.014f), toggle.Id);
+                continue;
+            }
+            AddRing(part, toggle, Vector3.UnitX, 0.018f, 0.004f, stretch: 1.2f, _settings.HardwareSegments);
+            AddCylinder(part, top, bottom, 0.0135f, Math.Clamp(_settings.HardwareSegments / 2, 6, 12), toggle.Id);
         }
         part.ComputeNormals();
         return part;
     }
 
-    private static void AddTube(MeshPart part, RigPoint a, RigPoint b, float radius, int sides, Vector4 color)
+    // Rings at the ends and every segment length in between, so the tube follows a sagging, deformed line smoothly.
+    private static int Rings(float length, double segmentLength) =>
+        segmentLength > 0 ? Math.Clamp((int)(length / segmentLength) + 1, 1, 12) + 1 : 2;
+
+    // A flat strip along the line, facing forward and backward (the lines' material is double-sided).
+    private static void AddRibbon(MeshPart part, RigPoint a, RigPoint b, float radius, double segmentLength, Vector4 color)
+    {
+        var axis = b.Position - a.Position;
+        float length = axis.Length();
+        if (length < 1e-6f) return;
+        axis /= length;
+        var across = Vector3.Cross(axis, Vector3.UnitZ);
+        across = across.LengthSquared() > 1e-8f ? Vector3.Normalize(across) : Vector3.UnitX;
+        int rings = Rings(length, segmentLength);
+        uint start = (uint)part.VertexCount;
+        for (int r = 0; r < rings; r++)
+        {
+            float f = r / (float)(rings - 1);
+            var center = Vector3.Lerp(a.Position, b.Position, f);
+            for (int s = 0; s < 2; s++)
+            {
+                part.AddVertex(center + across * (s == 0 ? -radius : radius), new Vector2(s, f * length), VertexBind.OnRigging(a.Id, b.Id, f), color);
+            }
+        }
+        for (int r = 0; r < rings - 1; r++)
+        {
+            uint i = start + (uint)(2 * r);
+            part.AddQuad(i, i + 1, i + 3, i + 2);
+        }
+    }
+
+    private static void AddTube(MeshPart part, RigPoint a, RigPoint b, float radius, int sides, double segmentLength, Vector4 color)
     {
         var axis = b.Position - a.Position;
         float length = axis.Length();
         if (length < 1e-6f) return;
         axis /= length;
         var (u, v) = Perpendiculars(axis);
-        // Rings at the ends and in between, so the tube follows a sagging, deformed line smoothly.
-        int rings = Math.Clamp((int)(length / 0.5f) + 1, 1, 12) + 1;
+        int rings = Rings(length, segmentLength);
         uint start = (uint)part.VertexCount;
         for (int r = 0; r < rings; r++)
         {
@@ -148,10 +191,51 @@ public sealed class RiggingBuilder(RiggingLayout layout, Design.GliderDesign des
         }
     }
 
-    // A ring (torus) around the point, in the plane perpendicular to the normal, stretched along Y into an oval.
-    private static void AddRing(MeshPart part, RigPoint point, Vector3 normal, float radius, float tube, float stretch)
+    // A low poly stand-in for a ring: an octahedron around the point, stretched along Y like the ring.
+    private static void AddDiamond(MeshPart part, RigPoint point, float radius, float stretch)
     {
-        const int segments = 24, sides = 8;
+        var bind = VertexBind.OnRigging(point.Id, point.Id, 0);
+        Vector3[] corners =
+        [
+            new(radius, 0, 0), new(-radius, 0, 0),
+            new(0, radius * stretch, 0), new(0, -radius * stretch, 0),
+            new(0, 0, radius * 0.5f), new(0, 0, -radius * 0.5f),
+        ];
+        uint start = (uint)part.VertexCount;
+        foreach (var c in corners) part.AddVertex(point.Position + c, new Vector2(0.5f, 0.5f), bind);
+        // Faces of the octahedron, counterclockwise seen from outside.
+        int[] faces = [0, 2, 4, 2, 1, 4, 1, 3, 4, 3, 0, 4, 2, 0, 5, 1, 2, 5, 3, 1, 5, 0, 3, 5];
+        for (int k = 0; k < faces.Length; k += 3) part.AddTriangle(start + (uint)faces[k], start + (uint)faces[k + 1], start + (uint)faces[k + 2]);
+    }
+
+    // A box centered on center with the given half extents, bound to one rigging point.
+    private static void AddBox(MeshPart part, Vector3 center, Vector3 half, int pointId)
+    {
+        var bind = VertexBind.OnRigging(pointId, pointId, 0);
+        // Four vertices per face, so the faces stay flat shaded.
+        (Vector3 Normal, Vector3 U, Vector3 V)[] faces =
+        [
+            (Vector3.UnitX, Vector3.UnitY, Vector3.UnitZ), (-Vector3.UnitX, Vector3.UnitZ, Vector3.UnitY),
+            (Vector3.UnitY, Vector3.UnitZ, Vector3.UnitX), (-Vector3.UnitY, Vector3.UnitX, Vector3.UnitZ),
+            (Vector3.UnitZ, Vector3.UnitX, Vector3.UnitY), (-Vector3.UnitZ, Vector3.UnitY, Vector3.UnitX),
+        ];
+        foreach (var (n, u, v) in faces)
+        {
+            uint start = (uint)part.VertexCount;
+            for (int k = 0; k < 4; k++)
+            {
+                float su = k is 1 or 2 ? 1 : -1, sv = k >= 2 ? 1 : -1;
+                part.AddVertex(center + (n + u * su + v * sv) * half, new Vector2((su + 1) / 2, (sv + 1) / 2), bind);
+            }
+            part.AddQuad(start, start + 1, start + 2, start + 3);
+        }
+    }
+
+    // A ring (torus) around the point, in the plane perpendicular to the normal, stretched along Y into an oval.
+    private static void AddRing(MeshPart part, RigPoint point, Vector3 normal, float radius, float tube, float stretch, int segments)
+    {
+        segments = Math.Clamp(segments, 6, 48);
+        int sides = Math.Clamp(segments / 3, 4, 8);
         var (u, v) = Perpendiculars(normal);
         if (Math.Abs(v.Y) < Math.Abs(u.Y)) (u, v) = (v, u); // v is the long, vertical axis
         uint start = (uint)part.VertexCount;

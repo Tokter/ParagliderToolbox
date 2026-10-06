@@ -39,8 +39,10 @@ dotnet run --project src/ParagliderToolbox     # the app; PARAGLIDERTOOLBOX_SETT
   Atelier generator registers them, so menus, the command palette and the keybinding editor pick them up. Groups:
   `Application` (`ShellViewModel`: files, palette, shortcuts, theme, layout), `Project` (`ProjectCommands`: add/rename/
   duplicate, anywhere in the window), `Project explorer` (delete/move, only while the tree has focus). Each creatable
-  node type gets a runtime-registered `Add<TypeId>` command. Commands use `IShellDialogs` (implemented by `MainView`,
-  faked in tests) instead of UI code.
+  node type gets a runtime-registered `Add<TypeId>` command; a type registered with `createInteractively` (e.g. a
+  dialog asking how to set the node up, null on cancel) is added through it (`ProjectCommands.AddNodeInteractivelyAsync`;
+  `AddNode` uses the default constructor). Commands use `IShellDialogs` (implemented by `MainView`, faked in tests)
+  instead of UI code; `ShowDialogAsync` shows a module's own content with Cancel/OK.
 - **Views** (`Framework/Views`): `MainView` (title bar menu, `WorkspaceView`, dialogs), `ProjectExplorerView`
   (TreeView synced with `Toolbox.SelectedNode`), `PropertiesView` (PropertyGrid), `DetailView` (hosts the node's
   detail view). Views subscribe to the toolbox in `OnAttachedToVisualTree` and unsubscribe when detached. `MainView`
@@ -56,7 +58,12 @@ Two parts: `src/ParagliderToolbox.Paraglider` (a UI-free library, also usable by
 simulation algorithm for game developers; keep it in sync with the simulator.
 
 - **Design** (`Design/GliderDesign`): every parameter (meters, degrees, chord fractions, span fractions η). `Curve`
-  (`Mathematics/Curve`, monotone cubic, immutable, JSON-serializable) for distributions.
+  (`Mathematics/Curve`, monotone cubic, immutable, JSON-serializable) for distributions. `GliderPresets` creates the
+  designs of the classes EN-A … EN-D (`WingClass`); keep `new GliderDesign()` unchanged (tests depend on it).
+  `MeshSettings.FromDesign` resolves `MeshDetail` (LowPoly/Medium/High override the explicit mesh settings, Custom —
+  the default of a new design and of old project files — uses them); generators read `MeshSettings`, not the explicit
+  fields. Low poly: `CanopyBuilder` skin on every n-th rib without displacements or inlets, ribbon lines, diamond
+  hardware. `RowCount` 2 is a two-liner (A, B).
 - **Geometry**: `Airfoil` (NACA modified four-digit thickness + reflexed camber, or Selig/Lednicer .dat), `GliderShape`
   (planform, arc integrated from roll angles so arc length = flat span, washout, thickness, shark nose, rib layout,
   trim attitude; glTF frame: +Y up, +Z forward, +X pilot's left, carabiners at the origin; profile parameter
@@ -66,13 +73,22 @@ simulation algorithm for game developers; keep it in sync with the simulator.
 - **Rigging**: `RiggingLayout` (tabs, cascades, risers, brakes; straight lines), `RiggingBuilder` (tubes, straps, rings).
 - **Texturing**: `CanopyTextureGenerator` paints base color + normal map in the canopy UV layout (u = (η+1)/2, v = (t+1)/2).
 - **Proxy**: `ProxyBuilder` (sections on tab ribs, stations include the line rows, fabric/rib/bend/diagonal-rib
-  constraints, tension-only lines, strips with outward pressure surfaces, controls, sampled `SectionPolar`),
-  `SkinBinder` (≤ 4 joints per vertex), `ProxyDeformer` (node frames → linear blend skinning).
+  constraints with a `ProxyMaterial`, tension-only lines with `LinePoint`s along the long ones so they sag, the pilot's
+  `Hand` constraints holding the toggles, strips with outward pressure surfaces, controls (with the cells they close),
+  sampled `SectionPolar`), `SkinBinder` (≤ 4 joints per vertex; lines follow their proxy path via
+  `ProxyBuild.LinePaths`/`TabPaths`), `ProxyDeformer` (node frames → linear blend skinning). Bump
+  `ProxyModel.CurrentFormatVersion` and update `docs/ProxyFormat.md` when the proxy or the algorithm changes.
 - **Simulation** (`GliderSimulator`): XPBD with forces recomputed every substep, one fixed-order Gauss–Seidel pass per
   substep (alternating the order destabilizes it), origin rebasing (float precision), load-weighted strip velocities
-  (lift does no work), lifting-line induced angle by fixed-point iteration, flap lift for brakes, ram-air pressure cells.
-  Tests in `SimulationTests` pin the flight envelope (trim, brakes, speed bar, stall, frontal recovery); rerun them
-  after any physics change.
+  (lift does no work), lifting-line induced angle by fixed-point iteration, flap lift for brakes, ram-air pressure cells
+  whose inlets see the nose's own angle of attack and close when it flattens, and **fabric firmness**: canopy
+  constraints blend from stiff (inflated) to limp (`DeflatedCompliance`) by their cells' pressure, so the wing folds
+  like fabric in collapses, big ears and stalls. Tunables in `SimulatorSettings` (`StalledInletPressure`,
+  `FirmnessAirspeedExponent`, `DeflatedDrag`, `EnclosedAir` — off: it destabilizes the High proxy at 16 substeps).
+  Tests in `SimulationTests` pin the flight envelope and the shapes (trim, brakes and handles, slack brake lines, speed
+  bar, collapse, big ears, frontal span fold, full stall and recovery); rerun them after any physics change.
+  `PolarRecorder` shows the polar effect. For visual checks of shapes, a headless renderer of the proxy (orthographic
+  wire or shaded views over time) is far quicker than the app.
 - **Export** (`GliderExporter`, `GltfWriter`): .glb (skinned, PBR, embedded PNGs, optional proxy cage and baked
   animation), proxy JSON, OBJ/MTL/PNG, line plan CSV. Validate .glb changes with the Khronos glTF validator and a
   Blender import (Blender 4.4 is installed: `blender -b --python script.py`).
@@ -84,7 +100,10 @@ simulation algorithm for game developers; keep it in sync with the simulator.
   `PolarRecorderOptions` is the editable form of the settings (step counts, times) shown by
   `ParagliderActions.AskPolarSettingsAsync` through `IShellDialogs.EditPropertiesAsync` (a property grid in a dialog).
 - **Module**: `ParagliderNode` (a `ContainerNode` holding its `PolarNode`s; the parameters as [Inspectable] properties forwarding to a `GliderDesign`; colors saved as
-  hex; `Snapshot()` for the generator thread), `ParagliderPreview` (debounced background generation, Scene3D, simulation
+  hex; `Snapshot()` for the generator thread; `MeshDetail` writes its settings into the explicit mesh properties, and
+  editing one of those switches to Custom; `MeshDetail` is saved after them, `[JsonPropertyOrder(1)]`, so loading
+  doesn't switch), `NewParagliderOptions`/`NewParagliderView` (the new-paraglider dialog: class cards, detail segments,
+  triangle counts measured in the background; `ParagliderModule.AskNewParagliderAsync`), `ParagliderPreview` (debounced background generation, Scene3D, simulation
   loop driven by `Viewport3D.Rendered`), `ParagliderDetailView`, `ParagliderActions` (global export commands),
   `CurveEditor`/`CurvePropertyEditor`, `PolarDetailView` and `PolarChart` (plots a polar on Atelier.Charts' `XYChart`; also used live while recording). The 3D view is Atelier's `Atelier.Graphics3D.Viewport3D` (OpenGL on the window's
   context, composited into Skia).
