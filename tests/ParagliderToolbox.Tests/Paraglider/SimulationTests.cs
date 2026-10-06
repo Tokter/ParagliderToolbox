@@ -272,4 +272,33 @@ public class SimulationTests
         Assert.Equal(0, sim.SurfaceCrossings);
         Assert.True(crossed < frames / 50, $"crossed in {crossed} of {frames} frames");
     }
+
+    [Fact]
+    public void SuddenBrakeInput_PitchesTheWingBack_WithoutStallingIt()
+    {
+        // A step to 50 % brakes (a slider, a trigger) used to yank the light canopy back into a stall and a spin; pitch
+        // damping and the hand speed keep it a pitch-back and a surge.
+        var sim = Simulator();
+        Average(sim, 12);
+        float heading = MathF.Atan2(sim.PilotVelocity.X, sim.PilotVelocity.Z);
+        float maxAoa = 0, maxSink = 0;
+        sim.Inputs.BrakeLeft = sim.Inputs.BrakeRight = 0.5f;
+        for (int i = 0; i < 90; i++)
+        {
+            sim.Step(1 / 60f);
+            maxAoa = MathF.Max(maxAoa, sim.CenterAngleOfAttack);
+        }
+        sim.Inputs.BrakeLeft = sim.Inputs.BrakeRight = 0;
+        for (int i = 0; i < 360; i++)
+        {
+            sim.Step(1 / 60f);
+            maxAoa = MathF.Max(maxAoa, sim.CenterAngleOfAttack);
+            maxSink = MathF.Max(maxSink, -sim.VerticalSpeed);
+        }
+        float turned = MathF.Abs(MathF.Atan2(sim.PilotVelocity.X, sim.PilotVelocity.Z) - heading) * 180 / MathF.PI;
+
+        Assert.True(maxAoa < 22, $"max angle of attack {maxAoa}");
+        Assert.True(maxSink < 5, $"max sink {maxSink}");
+        Assert.True(turned < 20, $"turned {turned}°");
+    }
 }

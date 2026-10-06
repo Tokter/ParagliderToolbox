@@ -86,7 +86,8 @@ simulation algorithm for game developers; keep it in sync with the simulator.
   like fabric in collapses, big ears and stalls; a one-sided pass after the constraints keeps the upper skin above the
   lower one at every station (`SurfaceSeparation`; limp cells would otherwise invert and the pressure would hold them
   inverted). Tunables in `SimulatorSettings` (`StalledInletPressure`,
-  `FirmnessAirspeedExponent`, `DeflatedDrag`, `EnclosedAir` — off: it destabilizes the High proxy at 16 substeps).
+  `FirmnessAirspeedExponent`, `DeflatedDrag`, `EnclosedAir` — off: it destabilizes the High proxy at 16 substeps;
+  `PitchDamping`, thin-airfoil pitch damping per strip as a couple; `HandSpeed`, the rate the inputs follow the pilot).
   Tests in `SimulationTests` pin the flight envelope and the shapes (trim, brakes and handles, slack brake lines, speed
   bar, collapse, big ears, frontal span fold, full stall and recovery); rerun them after any physics change.
   `PolarRecorder` shows the polar effect. For visual checks of shapes, a headless renderer of the proxy (orthographic

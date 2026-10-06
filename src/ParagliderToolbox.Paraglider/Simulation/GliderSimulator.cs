@@ -70,6 +70,19 @@ public sealed record SimulatorSettings
     /// </summary>
     public float SurfaceSeparation { get; init; } = 0.15f;
 
+    /// <summary>
+    /// Gets the aerodynamic pitch damping of the strips as a multiple of thin-airfoil theory (quasi-steady
+    /// Cm = −π/8 · ωc/V about the quarter chord, applied as a couple on the leading and trailing edge, so it only removes
+    /// energy); 0 turns it off. The strip flow is sampled at the center of pressure, which doesn't see the rotation.
+    /// </summary>
+    public float PitchDamping { get; init; } = 1;
+
+    /// <summary>
+    /// Gets how fast the pilot's inputs can change (full travel per second; letting go is twice as fast): hands and feet
+    /// don't move instantly, and a step input yanks the light canopy around. 0 applies the inputs at once.
+    /// </summary>
+    public float HandSpeed { get; init; } = 2.5f;
+
     /// <summary>Gets the extra drag coefficient of an empty cell (a crumpled bag of fabric).</summary>
     public float DeflatedDrag { get; init; } = 0.3f;
 }
@@ -346,6 +359,7 @@ public sealed class GliderSimulator
         }
         Array.Fill(_pressure, 1f);
         Origin = default;
+        _brakeLeft = _brakeRight = _speedBar = _collapseLeft = _collapseRight = _frontal = _bigEars = _weightShift = 0;
         Time = 0;
     }
 
@@ -353,7 +367,7 @@ public sealed class GliderSimulator
     public void Step(float dt)
     {
         if (dt <= 0) return;
-        ApplyControls();
+        ApplyControls(dt);
 
         int substeps = Math.Max(1, _settings.Substeps);
         float h = dt / substeps;
@@ -400,8 +414,28 @@ public sealed class GliderSimulator
         Origin = (Origin.X + shift.X, Origin.Y + shift.Y, Origin.Z + shift.Z);
     }
 
-    private void ApplyControls()
+    // The inputs as applied: they follow the pilot's at hand speed.
+    private float _brakeLeft, _brakeRight, _speedBar, _collapseLeft, _collapseRight, _frontal, _bigEars, _weightShift;
+
+    private float Follow(float applied, float target, float dt)
     {
+        float speed = _settings.HandSpeed;
+        if (speed <= 0) return target;
+        // Letting go is twice as fast as pulling; for weight shift, moving toward the center is.
+        float rate = (MathF.Abs(target) < MathF.Abs(applied) ? 2 : 1) * speed * dt;
+        return applied + Math.Clamp(target - applied, -rate, rate);
+    }
+
+    private void ApplyControls(float dt)
+    {
+        _brakeLeft = Follow(_brakeLeft, Math.Clamp(Inputs.BrakeLeft, 0, 1), dt);
+        _brakeRight = Follow(_brakeRight, Math.Clamp(Inputs.BrakeRight, 0, 1), dt);
+        _speedBar = Follow(_speedBar, Math.Clamp(Inputs.SpeedBar, 0, 1), dt);
+        _collapseLeft = Follow(_collapseLeft, Math.Clamp(Inputs.CollapseLeft, 0, 1), dt);
+        _collapseRight = Follow(_collapseRight, Math.Clamp(Inputs.CollapseRight, 0, 1), dt);
+        _frontal = Follow(_frontal, Math.Clamp(Inputs.Frontal, 0, 1), dt);
+        _bigEars = Follow(_bigEars, Math.Clamp(Inputs.BigEars, 0, 1), dt);
+        _weightShift = Follow(_weightShift, Math.Clamp(Inputs.WeightShift, -1, 1), dt);
         Array.Copy(_rest, _effectiveRest, _rest.Length);
         if (_closure.Length != _strips.Length) _closure = new float[_strips.Length];
         Array.Clear(_closure);
@@ -409,13 +443,13 @@ public sealed class GliderSimulator
         {
             float input = name switch
             {
-                "BrakeLeft" => Inputs.BrakeLeft,
-                "BrakeRight" => Inputs.BrakeRight,
-                "SpeedBar" => Inputs.SpeedBar,
-                "CollapseLeft" => Inputs.CollapseLeft,
-                "CollapseRight" => Inputs.CollapseRight,
-                "Frontal" => Inputs.Frontal,
-                "BigEarsLeft" or "BigEarsRight" => Inputs.BigEars,
+                "BrakeLeft" => _brakeLeft,
+                "BrakeRight" => _brakeRight,
+                "SpeedBar" => _speedBar,
+                "CollapseLeft" => _collapseLeft,
+                "CollapseRight" => _collapseRight,
+                "Frontal" => _frontal,
+                "BigEarsLeft" or "BigEarsRight" => _bigEars,
                 _ => 0,
             };
             if (input <= 0) continue;
@@ -430,7 +464,7 @@ public sealed class GliderSimulator
                 if (s < _closure.Length) _closure[s] = MathF.Max(_closure[s], input);
             }
         }
-        float shift = Math.Clamp(Inputs.WeightShift, -1, 1);
+        float shift = _weightShift;
         if (shift != 0 && _pilotHarness[0] != _pilotHarness[1])
         {
             _effectiveRest[_pilotHarness[0]] = _rest[_pilotHarness[0]] * (1 - 0.12f * shift);
@@ -717,6 +751,22 @@ public sealed class GliderSimulator
         var force = (liftDir * (float)cl + flowDir * (float)cd) * (q * area);
         _canopyLift += liftDir * (float)(cl * q * area);
         _canopyDrag += flowDir * (float)(cd * q * area);
+
+        // Pitch damping: a strip rotating nose-up (its leading edge rising against its trailing edge) meets a nose-down
+        // moment, −π/8·ωc/V of q·S·c (thin airfoil, quasi-steady), as a couple ±M/c on the leading and trailing edge.
+        if (_settings.PitchDamping > 0)
+        {
+            var leVelocity = (_velocities[strip.LeA] + _velocities[strip.LeB]) * 0.5f;
+            var teVelocity = (_velocities[strip.TeA] + _velocities[strip.TeB]) * 0.5f;
+            float pitchRate = Vector3.Dot(leVelocity - teVelocity, up) / chordLength;
+            float moment = _settings.PitchDamping * MathF.PI / 16 * rho * speed * area * chordLength * chordLength * pitchRate;
+            var couple = up * (moment / chordLength * 0.5f);
+            _forces[strip.LeA] -= couple;
+            _forces[strip.LeB] -= couple;
+            _forces[strip.TeA] += couple;
+            _forces[strip.TeB] += couple;
+            AeroPower -= moment * pitchRate;
+        }
         for (int k = 0; k < weights.Length; k++) { _forces[strip.Nodes[k]] += force * weights[k]; AeroPower += Vector3.Dot(force * weights[k], _velocities[strip.Nodes[k]] - wind); }
 
         // The center of pressure for the next substep, from the moment coefficient.

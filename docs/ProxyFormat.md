@@ -86,6 +86,9 @@ never below 5% of the rest length:
 
 Weight shift lengthens one pilot–carabiner harness constraint and shortens the other (±12% in the reference simulator).
 
+The reference simulator applies the inputs at **hand speed**: each follows the pilot's at up to 2.5 full travels per
+second (letting go twice as fast), since hands and feet don't move instantly.
+
 ## Simulation algorithm
 
 Per frame (e.g. 1/60 s), `substeps` times (16 for Medium; more for High):
@@ -135,6 +138,11 @@ For each strip (sections A and B):
 - A deflated cell is a crumpled bag: `Cl *= 0.25 + 0.75·p`, `Cd += 0.3·(1 − p)` with `p` = its pressure clamped to 0…1.
 - `F = ½ρV² · |ĉ chord| · |span| · (Cl·L̂ + Cd·flow/V)` with `L̂` = `û` made perpendicular to the flow; spread with the
   load weights. Next center of pressure: `0.25 − Cm/Cl` (clamped 0.05…0.9), smoothed.
+- **Pitch damping**: the strip velocity is sampled at the center of pressure, so it doesn't see the strip rotating.
+  Add the quasi-steady thin-airfoil damping `M = −π/16 · ρ·V·S·c² · ω` with `ω = ((v_LE − v_TE)·û)/c` (nose-up
+  positive) and `S` the strip area, as a couple: `−M/(2c)·û` on each leading-edge node and `+M/(2c)·û` on each
+  trailing-edge node (no net force; its power `−M·ω` is never positive). Without it a sudden brake input yanks the light
+  canopy back into a stall.
 
 ### Cell pressure (ram air)
 
