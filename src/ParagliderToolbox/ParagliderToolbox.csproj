@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
+    <RootNamespace>ParagliderToolbox</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="$(AtelierSrc)Atelier.Core\Atelier.Core.csproj" />
+    <ProjectReference Include="$(AtelierSrc)Atelier.Layout\Atelier.Layout.csproj" />
+    <ProjectReference Include="$(AtelierSrc)Atelier.Rendering\Atelier.Rendering.csproj" />
+    <ProjectReference Include="$(AtelierSrc)Atelier.Theming\Atelier.Theming.csproj" />
+    <ProjectReference Include="$(AtelierSrc)Atelier.Theming.Material\Atelier.Theming.Material.csproj" />
+    <ProjectReference Include="$(AtelierSrc)Atelier.Controls\Atelier.Controls.csproj" />
+    <ProjectReference Include="$(AtelierSrc)Atelier.Markup\Atelier.Markup.csproj" />
+    <ProjectReference Include="$(AtelierSrc)Atelier.Platform.Silk\Atelier.Platform.Silk.csproj" />
+    <ProjectReference Include="$(AtelierSrc)Atelier.Graphics3D\Atelier.Graphics3D.csproj" />
+    <ProjectReference Include="$(AtelierSrc)Atelier.Charts\Atelier.Charts.csproj" />
+    <ProjectReference Include="..\ParagliderToolbox.Paraglider\ParagliderToolbox.Paraglider.csproj" />
+    <!-- [Command] metadata and [Inspectable] property descriptors are generated at compile time. -->
+    <ProjectReference Include="$(AtelierSrc)Atelier.Generators\Atelier.Generators.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="SkiaSharp.NativeAssets.Win32" Version="4.152.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="ParagliderToolbox.Tests" />
+  </ItemGroup>
+
+</Project>

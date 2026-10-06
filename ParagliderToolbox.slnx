@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/ParagliderToolbox/ParagliderToolbox.csproj" />
+    <Project Path="src/ParagliderToolbox.Paraglider/ParagliderToolbox.Paraglider.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/ParagliderToolbox.Tests/ParagliderToolbox.Tests.csproj" />
+  </Folder>
+</Solution>

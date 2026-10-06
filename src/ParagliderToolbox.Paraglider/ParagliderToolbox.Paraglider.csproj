@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- The paraglider generator without UI: design parameters, airfoils, the high resolution mesh, rigging, the physics
+       proxy and its simulation, skinning and the exporters. -->
+  <PropertyGroup>
+    <RootNamespace>ParagliderToolbox.Paraglider</RootNamespace>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <!-- The simulation and the generator are numeric hot loops: optimized even in Debug builds (7x faster). -->
+    <Optimize>true</Optimize>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="SkiaSharp" Version="4.152.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="ParagliderToolbox.Tests" />
+  </ItemGroup>
+
+</Project>
