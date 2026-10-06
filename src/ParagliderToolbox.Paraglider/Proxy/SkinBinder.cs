@@ -25,23 +25,52 @@ public readonly record struct SkinWeights(int J0, int J1, int J2, int J3, float 
 /// points follow their proxy node, or, when the proxy has none (tabs off the sections, knots of a proxy without
 /// cascades), the nodes their position is interpolated from.
 /// </summary>
+/// <remarks>
+/// Canopy nodes turn with the canopy, and a line hanging from one would swing with it (a 2 m line under a tab that
+/// pitches 2° moves 7 cm sideways). So rigging points follow canopy nodes through <see cref="Attachments"/>: extra joints
+/// after the node joints that only translate with their node.
+/// </remarks>
 public sealed class SkinBinder
 {
     private readonly ProxyBuild _build;
     private readonly RiggingLayout _rigging;
     private readonly Dictionary<int, Dictionary<int, double>> _rigWeights = [];
+    private readonly Dictionary<int, int> _attachmentJoints = [];
 
     /// <summary>Initializes a binder for a proxy and the rigging it was built from.</summary>
     public SkinBinder(ProxyBuild build, RiggingLayout rigging)
     {
         _build = build;
         _rigging = rigging;
+
+        // Every canopy node a rigging point follows gets an attachment joint, in node order.
+        var rotating = ProxyDeformer.RotatingNodes(build.Model);
+        var attached = new SortedSet<int>();
+        foreach (var point in rigging.Points)
+            foreach (int node in RigPointWeights(point.Id).Keys)
+                if (rotating[node]) attached.Add(node);
+        Attachments = [.. attached];
+        for (int k = 0; k < Attachments.Length; k++) _attachmentJoints[Attachments[k]] = build.Model.Nodes.Count + k;
     }
 
+    /// <summary>
+    /// Gets the canopy nodes the rigging hangs from: joint <c>nodes + k</c> follows node <c>Attachments[k]</c>, translating
+    /// only (see <see cref="ProxyDeformer"/>).
+    /// </summary>
+    public int[] Attachments { get; }
+
     /// <summary>Gets the weights of a vertex.</summary>
-    public SkinWeights Bind(VertexBind bind) => SkinWeights.From(bind.Kind == BindKind.Canopy
-        ? CanopyWeights(bind.A, bind.B, bind.C)
-        : RiggingWeights(bind.PointA, bind.PointB, bind.A));
+    public SkinWeights Bind(VertexBind bind) => bind.Kind == BindKind.Canopy
+        ? SkinWeights.From(CanopyWeights(bind.A, bind.B, bind.C))
+        : SkinWeights.From(Attach(RiggingWeights(bind.PointA, bind.PointB, bind.A)));
+
+    // Rigging follows canopy nodes through their attachment joints.
+    private Dictionary<int, double> Attach(Dictionary<int, double> weights)
+    {
+        var result = new Dictionary<int, double>();
+        foreach (var (node, w) in weights) Add(result, _attachmentJoints.GetValueOrDefault(node, node), w);
+        return result;
+    }
 
     /// <summary>Binds every vertex of <paramref name="part"/>.</summary>
     public SkinWeights[] Bind(MeshPart part)
@@ -188,35 +217,53 @@ public sealed class SkinBinder
 /// <summary>
 /// Moves the high resolution mesh with the proxy: every node carries a frame (its position, and for canopy nodes the
 /// directions to its chord and span neighbors), and each vertex follows its nodes' frames from the rest pose to the
-/// current pose (linear blend skinning, as in the glTF skin export).
+/// current pose (linear blend skinning, as in the glTF skin export). The joints are the nodes, then the attachments
+/// (see <see cref="SkinBinder.Attachments"/>): canopy nodes again, but translating only.
 /// </summary>
 public sealed class ProxyDeformer
 {
-    private readonly ProxyModel _model;
     private readonly (int ChordPrev, int ChordNext, int SpanPrev, int SpanNext)[] _neighbors;
+    private readonly int[] _attachments;
     private readonly Matrix4x4[] _restInverse;
 
-    /// <summary>Initializes a deformer for <paramref name="model"/>, its rest pose being the nodes' positions.</summary>
-    public ProxyDeformer(ProxyModel model)
+    /// <summary>
+    /// Initializes a deformer for <paramref name="model"/>, its rest pose being the nodes' positions, with the attachment
+    /// joints <paramref name="attachments"/> (the model's <see cref="GliderModel.SkinAttachments"/>).
+    /// </summary>
+    public ProxyDeformer(ProxyModel model, IReadOnlyList<int>? attachments = null)
     {
-        _model = model;
         _neighbors = FindNeighbors(model);
+        _attachments = attachments?.ToArray() ?? [];
+        NodeCount = model.Nodes.Count;
         var rest = model.Nodes.Select(n => n.Position).ToArray();
-        _restInverse = new Matrix4x4[rest.Length];
-        RestFrames = new Matrix4x4[rest.Length];
-        for (int i = 0; i < rest.Length; i++)
+        _restInverse = new Matrix4x4[JointCount];
+        RestFrames = new Matrix4x4[JointCount];
+        for (int i = 0; i < JointCount; i++)
         {
             RestFrames[i] = Frame(i, rest);
             Matrix4x4.Invert(RestFrames[i], out _restInverse[i]);
         }
     }
 
-    /// <summary>Gets the nodes' frames in the rest pose (rows: axes, then position), the glTF joints' bind pose.</summary>
+    /// <summary>Gets the number of proxy nodes, the first joints.</summary>
+    public int NodeCount { get; }
+
+    /// <summary>Gets the number of joints: the nodes, then the attachments.</summary>
+    public int JointCount => NodeCount + _attachments.Length;
+
+    /// <summary>Gets the node joint <paramref name="joint"/> follows (itself, or the node an attachment is on).</summary>
+    public int JointNode(int joint) => joint < NodeCount ? joint : _attachments[joint - NodeCount];
+
+    /// <summary>Gets the joints' frames in the rest pose (rows: axes, then position), the glTF joints' bind pose.</summary>
     public Matrix4x4[] RestFrames { get; }
 
-    /// <summary>Gets the frame of node <paramref name="i"/> for the node positions <paramref name="positions"/>.</summary>
+    /// <summary>Gets which nodes turn with the canopy (have chord neighbors), as opposed to only translating.</summary>
+    public static bool[] RotatingNodes(ProxyModel model) => FindNeighbors(model).Select(n => n.Item1 >= 0 || n.Item2 >= 0).ToArray();
+
+    /// <summary>Gets the frame of joint <paramref name="i"/> for the node positions <paramref name="positions"/>.</summary>
     public Matrix4x4 Frame(int i, ReadOnlySpan<Vector3> positions)
     {
+        if (i >= NodeCount) return Matrix4x4.CreateTranslation(positions[_attachments[i - NodeCount]]);
         var p = positions[i];
         var (cp, cn, sp, sn) = _neighbors[i];
         if (cp < 0 && cn < 0) return Matrix4x4.CreateTranslation(p);
@@ -235,7 +282,10 @@ public sealed class ProxyDeformer
             p.X, p.Y, p.Z, 1);
     }
 
-    /// <summary>Computes the skinning matrix of every node: from the rest pose to <paramref name="positions"/>.</summary>
+    /// <summary>
+    /// Computes the skinning matrix of every joint (<see cref="JointCount"/> of them): from the rest pose to
+    /// <paramref name="positions"/>.
+    /// </summary>
     public void ComputeSkinMatrices(ReadOnlySpan<Vector3> positions, Span<Matrix4x4> result)
     {
         for (int i = 0; i < _restInverse.Length; i++) result[i] = _restInverse[i] * Frame(i, positions);

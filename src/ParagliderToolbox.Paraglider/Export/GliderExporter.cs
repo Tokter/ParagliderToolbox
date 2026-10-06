@@ -76,24 +76,26 @@ public static class GliderExporter
         options ??= new GlbOptions();
         var gltf = new GltfWriter();
         var proxy = model.Proxy.Model;
-        var deformer = new ProxyDeformer(proxy);
+        var deformer = new ProxyDeformer(proxy, model.SkinAttachments);
         bool skinned = options.Skinned || options.ProxyOnly;
 
 
         // Skinned meshes and the armature are scene roots (glTF ignores parent transforms of skinned meshes).
-        // The skeleton: one joint per proxy node, under an armature node.
+        // The skeleton: one joint per proxy node, then the attachments (the canopy nodes the rigging hangs from, again,
+        // translating only), under an armature node.
         int skin = -1;
-        var joints = new int[proxy.Nodes.Count];
+        var joints = new int[deformer.JointCount];
         if (skinned)
         {
             int armature = gltf.AddNode(new JsonObject { ["name"] = "Armature", ["children"] = new JsonArray() }, root: true);
             var armatureChildren = (JsonArray)gltf.Nodes[armature]!["children"]!;
-            for (int i = 0; i < proxy.Nodes.Count; i++)
+            for (int i = 0; i < joints.Length; i++)
             {
                 Matrix4x4.Decompose(deformer.RestFrames[i], out _, out var rotation, out var translation);
+                string name = proxy.Nodes[deformer.JointNode(i)].Name;
                 joints[i] = gltf.AddNode(new JsonObject
                 {
-                    ["name"] = proxy.Nodes[i].Name,
+                    ["name"] = i < deformer.NodeCount ? name : name + " attachment",
                     ["translation"] = new JsonArray(translation.X, translation.Y, translation.Z),
                     ["rotation"] = new JsonArray(rotation.X, rotation.Y, rotation.Z, rotation.W),
                 });
@@ -280,6 +282,7 @@ public static class GliderExporter
             }
             samplers.Add(new JsonObject { ["input"] = time, ["output"] = gltf.AddAccessor(translations, target: null), ["interpolation"] = "LINEAR" });
             channels.Add(new JsonObject { ["sampler"] = samplers.Count - 1, ["target"] = new JsonObject { ["node"] = joints[j], ["path"] = "translation" } });
+            if (j >= deformer.NodeCount) continue; // attachments only translate
             samplers.Add(new JsonObject { ["input"] = time, ["output"] = gltf.AddAccessor(rotations), ["interpolation"] = "LINEAR" });
             channels.Add(new JsonObject { ["sampler"] = samplers.Count - 1, ["target"] = new JsonObject { ["node"] = joints[j], ["path"] = "rotation" } });
         }

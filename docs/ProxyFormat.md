@@ -1,8 +1,9 @@
 # Paraglider proxy format and simulation
 
 The Paraglider Model Creator exports a low resolution **physics proxy** of each glider (`<name>_proxy.json`) and a
-high resolution glTF model (`<name>.glb`) whose mesh is skinned to a skeleton with **one joint per proxy node**. A game
-simulates the proxy and moves the joints; the high resolution canopy, ribs, lines and risers follow.
+high resolution glTF model (`<name>.glb`) whose mesh is skinned to a skeleton with **one joint per proxy node** (plus
+translation-only attachment joints for the lines, see below). A game simulates the proxy and moves the joints; the high
+resolution canopy, ribs, lines and risers follow.
 
 The reference simulator is `ParagliderToolbox.Paraglider.Simulation.GliderSimulator` (C#, no dependencies besides
 .NET); port it or load the library directly. Everything below describes what it does.
@@ -191,9 +192,15 @@ node's **frame**: its position, and for canopy nodes the axes from its chord and
 `z = x × span`, `y = z × x`); other nodes only translate. To pose the model, compute each node's current frame the same
 way and set the joint's world transform to it (`ProxyDeformer.Frame` in the reference code).
 
-- **Godot**: import the `.glb`; the joints become `Skeleton3D` bones in the proxy's node order. Set each bone's global
-  pose from the simulated frames every physics frame.
-- **Blender**: import the `.glb`; the armature has one bone per proxy node and the canopy is parented with weights.
+After the node joints come the **attachments**, named `<node name> attachment`: canopy nodes again, the ones the lines
+hang from (tabs, and the canopy nodes around a tab that has no node of its own). An attachment only translates: its
+world transform is its node's position, with no rotation. The rigging is skinned to these instead of the canopy joints: a
+canopy joint turns with the fabric, and a line skinned to it would swing with it, by up to its length times the angle
+(a meter in a collapse), and zig-zag between the points along it.
+
+- **Godot**: import the `.glb`; the joints become `Skeleton3D` bones in the proxy's node order, then the attachments.
+  Set each bone's global pose from the simulated frames every physics frame.
+- **Blender**: import the `.glb`; the armature has one bone per joint and the canopy is parented with weights.
   The toolbox can record a simulated flight and bake it into the joints (the preview's Record and Export recording),
   which Blender imports as an action.
 

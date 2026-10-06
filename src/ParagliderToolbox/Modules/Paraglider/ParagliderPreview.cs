@@ -448,8 +448,8 @@ public sealed partial class ParagliderPreview : ObservableObject, IDisposable
         if (_simulator is null)
         {
             _simulator = new GliderSimulator(model.Proxy.Model);
-            _deformer = new ProxyDeformer(model.Proxy.Model);
-            _skin = new Matrix4x4[model.Proxy.Model.Nodes.Count];
+            _deformer = new ProxyDeformer(model.Proxy.Model, model.SkinAttachments);
+            _skin = new Matrix4x4[_deformer.JointCount];
             int largest = model.Parts.Max(p => p.VertexCount);
             _positionBuffer = new Vector3[largest];
             _normalBuffer = new Vector3[largest];

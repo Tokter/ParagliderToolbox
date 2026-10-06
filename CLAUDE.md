@@ -76,7 +76,10 @@ simulation algorithm for game developers; keep it in sync with the simulator.
   constraints with a `ProxyMaterial`, tension-only lines with `LinePoint`s along the long ones so they sag, the pilot's
   `Hand` constraints holding the toggles, strips with outward pressure surfaces, controls (with the cells they close),
   sampled `SectionPolar`), `SkinBinder` (≤ 4 joints per vertex; lines follow their proxy path via
-  `ProxyBuild.LinePaths`/`TabPaths`), `ProxyDeformer` (node frames → linear blend skinning). Bump
+  `ProxyBuild.LinePaths`/`TabPaths`), `ProxyDeformer` (node frames → linear blend skinning). Joints are the nodes,
+  then `GliderModel.SkinAttachments`: translation-only copies of the canopy nodes the rigging hangs from (never skin
+  rigging to a rotating canopy joint: the lines swing with the fabric and zig-zag). Size skin arrays by
+  `ProxyDeformer.JointCount`. Bump
   `ProxyModel.CurrentFormatVersion` and update `docs/ProxyFormat.md` when the proxy or the algorithm changes.
 - **Simulation** (`GliderSimulator`): XPBD with forces recomputed every substep, one fixed-order Gauss–Seidel pass per
   substep (alternating the order destabilizes it), origin rebasing (float precision), load-weighted strip velocities

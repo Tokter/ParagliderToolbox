@@ -87,9 +87,9 @@ public class ProxyTests
     public void Skin_WeightsSumToOne_AndTheRestPoseDoesNotMoveTheMesh()
     {
         var model = Generate(ProxyComplexity.Medium);
-        var deformer = new ProxyDeformer(model.Proxy.Model);
+        var deformer = new ProxyDeformer(model.Proxy.Model, model.SkinAttachments);
         var rest = model.Proxy.Model.Nodes.Select(n => n.Position).ToArray();
-        var skin = new Matrix4x4[rest.Length];
+        var skin = new Matrix4x4[deformer.JointCount];
         deformer.ComputeSkinMatrices(rest, skin);
 
         for (int p = 0; p < model.Parts.Count; p++)
@@ -105,13 +105,64 @@ public class ProxyTests
     }
 
     [Fact]
+    public void Skin_KeepsTheLinesOnTheProxyLines_WhenTheCanopyTurns()
+    {
+        var model = Generate(ProxyComplexity.Medium);
+        var proxy = model.Proxy.Model;
+        var deformer = new ProxyDeformer(proxy, model.SkinAttachments);
+        Assert.NotEmpty(model.SkinAttachments);
+
+        // Pitch the canopy 20° about its middle; the lines hang from it.
+        var canopyNodes = proxy.Nodes.Where(n => n.Kind is ProxyNodeKind.Upper or ProxyNodeKind.Lower or ProxyNodeKind.Camber).ToList();
+        var middle = canopyNodes.Aggregate(Vector3.Zero, (sum, n) => sum + n.Position) / canopyNodes.Count;
+        var pitch = Matrix4x4.CreateTranslation(-middle) * Matrix4x4.CreateRotationX(0.35f) * Matrix4x4.CreateTranslation(middle);
+        var rest = proxy.Nodes.Select(n => n.Position).ToArray();
+        var moved = rest.ToArray();
+        foreach (var n in canopyNodes) moved[n.Id] = Vector3.Transform(n.Position, pitch);
+        var skin = new Matrix4x4[deformer.JointCount];
+        deformer.ComputeSkinMatrices(moved, skin);
+
+        int index = model.Parts.FindIndex(p => p.Material == GliderMaterial.Lines);
+        var lines = model.Parts[index];
+        var positions = new Vector3[lines.VertexCount];
+        var normals = new Vector3[lines.VertexCount];
+        ProxyDeformer.Deform(lines.Positions, lines.Normals, model.Skin[index], skin, positions, normals);
+
+        // Where the proxy puts that fraction of the line (along its path of nodes).
+        Vector3? OnLine(VertexBind bind, Vector3[] nodes)
+        {
+            if (model.Proxy.LinePaths.TryGetValue((bind.PointA, bind.PointB), out var path))
+            {
+                float position = (float)bind.A * (path.Length - 1);
+                int k = Math.Min((int)position, path.Length - 2);
+                return Vector3.Lerp(nodes[path[k]], nodes[path[k + 1]], position - k);
+            }
+            var rigNodes = model.Proxy.RigPointNodes;
+            if (rigNodes.TryGetValue(bind.PointA, out int a) && rigNodes.TryGetValue(bind.PointB, out int b))
+                return Vector3.Lerp(nodes[a], nodes[b], (float)bind.A);
+            return null;
+        }
+
+        int checkedVertices = 0;
+        for (int i = 0; i < lines.VertexCount; i++)
+        {
+            if (OnLine(lines.Binds[i], rest) is not { } before || OnLine(lines.Binds[i], moved) is not { } after) continue;
+            // A vertex keeps its offset from the line's axis (the tube's radius): it doesn't swing with the canopy.
+            float radius = Vector3.Distance(lines.Positions[i], before);
+            Assert.True(Vector3.Distance(positions[i], after) < radius + 1e-3f, $"vertex {i}: {Vector3.Distance(positions[i], after):F3} m off");
+            checkedVertices++;
+        }
+        Assert.True(checkedVertices > lines.VertexCount / 2);
+    }
+
+    [Fact]
     public void Skin_CarriesTheMeshAlong_WhenTheProxyMovesRigidly()
     {
         var model = Generate(ProxyComplexity.Low);
-        var deformer = new ProxyDeformer(model.Proxy.Model);
+        var deformer = new ProxyDeformer(model.Proxy.Model, model.SkinAttachments);
         var rotation = Matrix4x4.CreateRotationY(0.7f) * Matrix4x4.CreateTranslation(3, 1, -2);
         var moved = model.Proxy.Model.Nodes.Select(n => Vector3.Transform(n.Position, rotation)).ToArray();
-        var skin = new Matrix4x4[moved.Length];
+        var skin = new Matrix4x4[deformer.JointCount];
         deformer.ComputeSkinMatrices(moved, skin);
 
         var canopy = model.Part(GliderMaterial.Canopy)!;

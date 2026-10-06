@@ -32,7 +32,7 @@ public class PresetTests(ITestOutputHelper output)
         };
         Assert.InRange(model.TriangleCount, min, max);
 
-        int joints = model.Proxy.Model.Nodes.Count;
+        int joints = model.Proxy.Model.Nodes.Count + model.SkinAttachments.Length;
         Assert.True(joints > 20);
         for (int p = 0; p < model.Parts.Count; p++)
         {

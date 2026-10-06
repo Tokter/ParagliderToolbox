@@ -23,6 +23,12 @@ public sealed class GliderModel
     /// <summary>Gets the skin weights of each part's vertices (same order as <see cref="Parts"/>).</summary>
     public required List<SkinWeights[]> Skin { get; init; }
 
+    /// <summary>
+    /// Gets the canopy nodes the rigging hangs from, the joints after the node joints (see
+    /// <see cref="SkinBinder.Attachments"/>); pass them to <see cref="ProxyDeformer"/>.
+    /// </summary>
+    public int[] SkinAttachments { get; init; } = [];
+
     public TextureImage? BaseColor { get; init; }
     public TextureImage? NormalMap { get; init; }
 
@@ -81,6 +87,7 @@ public static class GliderGenerator
             Parts = parts,
             Proxy = proxy,
             Skin = skin,
+            SkinAttachments = binder.Attachments,
             BaseColor = baseColor,
             NormalMap = normal,
             Elapsed = watch.Elapsed,
