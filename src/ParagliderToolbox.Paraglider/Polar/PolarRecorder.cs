@@ -77,9 +77,11 @@ public static class PolarRecorder
             double airspeed = 0, horizontal = 0, vertical = 0, vertical2 = 0, aoa = 0;
             float minPressure = 1, maxAoa = float.MinValue;
             int count = 0;
+            var speeds = new List<float>();
             Fly(settings.MeasureSeconds, _ =>
             {
                 var v = sim.PilotVelocity;
+                speeds.Add(v.Length());
                 airspeed += sim.Airspeed;
                 horizontal += MathF.Sqrt(v.X * v.X + v.Z * v.Z);
                 vertical += v.Y;
@@ -92,7 +94,9 @@ public static class PolarRecorder
             if (count == 0) break;
             double meanVertical = vertical / count;
             float spread = (float)Math.Sqrt(Math.Max(0, vertical2 / count - meanVertical * meanVertical));
-            float sink = (float)-meanVertical;
+            // Total-energy compensated, like a TE variometer: speed the glider lost while measuring (after a big change of
+            // setting it still swings in its slow speed/height oscillation) went into height and isn't a better glide.
+            float sink = (float)(-meanVertical - KineticEnergyRate(speeds, settings.StepTime));
             bool stalled = aoa / count > settings.StallAngleOfAttack || maxAoa > settings.StallAngleOfAttack + 15 || minPressure < 0.4f;
             var point = new PolarPoint
             {
@@ -210,6 +214,17 @@ public static class PolarRecorder
 
     private static float? StallBrake(IReadOnlyList<PolarPoint> points) => points.FirstOrDefault(p => p.IsStalled && p.Brake > 0)?.Brake;
 
+
+    // The rate of change of the kinetic energy per unit weight (m/s), from the mean speed over the first and last half
+    // second of a window sampled every `step` seconds: (V_end² − V_start²) / (2·g·T).
+    private static double KineticEnergyRate(List<float> speeds, float step)
+    {
+        int edge = Math.Max(1, (int)Math.Round(0.5 / step));
+        if (speeds.Count < 3 * edge) return 0;
+        double start = speeds.Take(edge).Average(), end = speeds.Skip(speeds.Count - edge).Average();
+        double duration = (speeds.Count - edge) * step;
+        return (end * end - start * start) / (2 * 9.81 * duration);
+    }
     /// <summary>Least-squares polynomial fit; returns the coefficients from the constant term up.</summary>
     internal static double[] FitPolynomial(double[] x, double[] y, int degree)
     {

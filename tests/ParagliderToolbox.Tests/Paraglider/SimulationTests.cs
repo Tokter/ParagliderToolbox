@@ -301,4 +301,23 @@ public class SimulationTests
         Assert.True(maxSink < 5, $"max sink {maxSink}");
         Assert.True(turned < 20, $"turned {turned}°");
     }
+
+    [Fact]
+    public void DefaultWing_FliesTheEnBReferencePolar()
+    {
+        // Progression EN-B reference (Flybubble): trim 36 km/h at 1.11 m/s sink (glide 9), top speed 48 km/h at 1.90 m/s
+        // (glide 7). Averaged over 30 s: the sink of a simulated wing wanders a few percent over tens of seconds.
+        var sim = Simulator();
+        Average(sim, 15);
+        var (trimSpeed, trimSink) = Average(sim, 30);
+        sim.Inputs.SpeedBar = 1;
+        Average(sim, 10);
+        var (topSpeed, topSink) = Average(sim, 30);
+
+        Assert.InRange(trimSpeed * 3.6f, 34, 39);
+        Assert.InRange(trimSink, 1.0f, 1.3f);
+        Assert.InRange(trimSpeed / trimSink, 7.8f, 10);
+        Assert.InRange(topSpeed * 3.6f, 45, 52);
+        Assert.InRange(topSink, 1.6f, 2.3f);
+    }
 }

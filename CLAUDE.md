@@ -86,8 +86,20 @@ simulation algorithm for game developers; keep it in sync with the simulator.
   like fabric in collapses, big ears and stalls; a one-sided pass after the constraints keeps the upper skin above the
   lower one at every station (`SurfaceSeparation`; limp cells would otherwise invert and the pressure would hold them
   inverted). Tunables in `SimulatorSettings` (`StalledInletPressure`,
-  `FirmnessAirspeedExponent`, `DeflatedDrag`, `EnclosedAir` — off: it destabilizes the High proxy at 16 substeps;
-  `PitchDamping`, thin-airfoil pitch damping per strip as a couple; `HandSpeed`, the rate the inputs follow the pilot).
+  `FirmnessAirspeedExponent`, `DeflatedDrag`, `EnclosedAir` — off; on the High proxy it needs `FabricDamping`;
+  `PitchDamping`, thin-airfoil pitch damping per strip as a couple; `HandSpeed`, the rate the inputs follow the pilot;
+  opt-in `LineDamping`/`FabricDamping`, velocity-level damping of taut constraints). Measured dead ends, don't retry
+  blindly: XPBD position-level constraint damping softens the line chains in our single Gauss–Seidel pass and pitches
+  the canopy back; velocity-level damping is neutral in flight (+10–25% time); enclosed air (+3 kg, no weight) changes
+  little and costs glide. The phugoid itself is physical (damping ratio ≈ 0.09 ≈ 1/(√2·L/D)); the missing physics for
+  violent collapse exits is the canopy's apparent mass (~40 kg normal to the canopy), which needs anisotropic inverse
+  masses in both the integration and the constraint projection.
+  **Calibration**: drag (`SectionPolar` Cd0 = 0.009 + 0.04·ballooning, k = 0.004; `SpanEfficiency` 1.25; pilot drag
+  area 0.33) is fitted to Flybubble's class polars (EN-B: trim 36 km/h at 1.11 m/s, top 48 km/h at 1.90 m/s); the
+  presets' trim angles and (effective) speed bar travel set their trim and top speeds. Judge glide by the force balance
+  (canopy lift / total drag) or long averages: the sink of a simulated wing wanders about ±8% over tens of seconds
+  (a solver-level energy exchange, present at every proxy complexity, larger with more substeps; not yet understood), so
+  short polar windows scatter. The polar recorder compensates for speed changes (total-energy sink).
   Tests in `SimulationTests` pin the flight envelope and the shapes (trim, brakes and handles, slack brake lines, speed
   bar, collapse, big ears, frontal span fold, full stall and recovery); rerun them after any physics change.
   `PolarRecorder` shows the polar effect. For visual checks of shapes, a headless renderer of the proxy (orthographic

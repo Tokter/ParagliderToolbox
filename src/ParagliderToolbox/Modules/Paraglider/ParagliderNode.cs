@@ -307,7 +307,7 @@ public partial class ParagliderNode : ContainerNode
     [InspectableProperty("Brake travel (m)", "Rigging", Order = 76, Description = "Brake travel from the end of the slack to full brakes.")]
     public double BrakeTravel { get => _design.BrakeTravel; set => Set(_design.BrakeTravel, Math.Clamp(value, 0.2, 1.2), v => _design.BrakeTravel = v); }
 
-    [InspectableProperty("Speed bar travel (m)", "Rigging", Order = 76, Description = "How much the speed bar shortens the A risers: about 0.1 for school wings, 0.12–0.14 for EN-B, 0.16–0.2 for competition wings.")]
+    [InspectableProperty("Speed bar travel (m)", "Rigging", Order = 76, Description = "How much the speed bar shortens the A risers in the simulator: about 0.08 for school wings to 0.13 for competition wings, for the classes' real top speeds (the simulated profile is rigid between the rows, so it takes less than a real speed system's 10–18 cm).")]
     public double SpeedBarTravel { get => _design.SpeedBarTravel; set => Set(_design.SpeedBarTravel, Math.Clamp(value, 0, 0.3), v => _design.SpeedBarTravel = v); }
 
     [InspectableProperty("Trim angle of attack (°)", "Rigging", Order = 77, Description = "Angle of attack of the center chord in trim flight; with the glide ratio it sets the canopy's pitch.")]

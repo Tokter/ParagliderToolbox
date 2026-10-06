@@ -302,13 +302,15 @@ public sealed class GliderDesign
     public double BrakeTravel { get; set; } = 0.65;
 
     /// <summary>
-    /// Gets or sets how much the speed bar shortens the A risers at full travel (m): about 0.1 for school wings, 0.12–0.14
-    /// for EN-B, 0.16–0.2 for competition wings. The rows behind follow proportionally less; the last row stays.
+    /// Gets or sets how much the speed bar shortens the A risers at full travel (m); the rows behind follow
+    /// proportionally less, the last row stays. The simulator's profile is rigid between the line rows, so a centimeter
+    /// of riser turns into more angle of attack than on a real wing: the presets use about 0.08 (EN-A) to 0.13 (EN-D),
+    /// which gives the classes' real top speeds (about +10 to +19 km/h); real speed systems travel 10–18 cm.
     /// </summary>
-    public double SpeedBarTravel { get; set; } = 0.12;
+    public double SpeedBarTravel { get; set; } = 0.085;
 
     /// <summary>Gets or sets the angle of attack of the center chord in trim flight (degrees).</summary>
-    public double TrimAngleOfAttack { get; set; } = 7.5;
+    public double TrimAngleOfAttack { get; set; } = 8.0;
 
     /// <summary>Gets or sets the trim glide ratio, which tilts the flight path (and so the canopy) below the horizon.</summary>
     public double TrimGlideRatio { get; set; } = 9.5;
@@ -423,16 +425,17 @@ public sealed class GliderDesign
     public double PilotMass { get; set; } = 85;
 
     /// <summary>Gets or sets the drag area of the pilot and harness (m², Cd·A): about 0.5 seated upright, 0.3 in a pod harness.</summary>
-    public double PilotDragArea { get; set; } = 0.4;
+    public double PilotDragArea { get; set; } = 0.33;
 
     /// <summary>Gets or sets the drag coefficient of the lines on their frontal area (around 1).</summary>
     public double LineDragCoefficient { get; set; } = 0.95;
 
     /// <summary>
-    /// Gets or sets the span efficiency of the lifting line (with the aspect ratio between flat and projected): about 1,
-    /// since an arched wing induces less drag than a flat one of its projected span.
+    /// Gets or sets the span efficiency of the lifting line (with the aspect ratio between flat and projected): about
+    /// 1.2–1.3. An arched wing induces less drag than a planar one of its projected span (nonplanar lifting line, Cone
+    /// 1962), while the strips also charge induced drag on the tips' sideways lift; 1.25 matches measured EN-B polars.
     /// </summary>
-    public double SpanEfficiency { get; set; } = 1.0;
+    public double SpanEfficiency { get; set; } = 1.25;
 
     #endregion
 

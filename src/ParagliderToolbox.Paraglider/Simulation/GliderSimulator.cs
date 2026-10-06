@@ -58,8 +58,10 @@ public sealed record SimulatorSettings
     public float FirmnessAirspeedExponent { get; init; } = 0.25f;
 
     /// <summary>
-    /// Gets whether the air inside the cells adds to the canopy's inertia (not its weight): physical, but it makes the
-    /// finest proxies (High) numerically marginal at 16 substeps, so it is off by default.
+    /// Gets whether the air inside the cells adds to the canopy's inertia (its weight is carried by the surrounding air, so
+    /// it adds no weight): about 3 kg more canopy mass. Physical, but off by default: it changes little (the apparent mass
+    /// of the air around the canopy, about 40 kg, is what would matter), costs some glide, and on the High proxy it needs
+    /// <see cref="FabricDamping"/>.
     /// </summary>
     public bool EnclosedAir { get; init; }
 
@@ -82,6 +84,18 @@ public sealed record SimulatorSettings
     /// don't move instantly, and a step input yanks the light canopy around. 0 applies the inputs at once.
     /// </summary>
     public float HandSpeed { get; init; } = 2.5f;
+
+    /// <summary>
+    /// Gets the share (0–1) of the stretching velocity a taut line or riser loses every substep, after the positions are
+    /// solved (stiff lines barely bounce back). Off by default: it changes nothing measurable in flight and costs time.
+    /// </summary>
+    public float LineDamping { get; init; }
+
+    /// <summary>
+    /// Gets the share (0–1) of the stretching velocity stretched canopy fabric and ribs lose every substep. Off by default;
+    /// turn it on (1) with <see cref="EnclosedAir"/> on the High proxy, which otherwise flutters and tucks at 16 substeps.
+    /// </summary>
+    public float FabricDamping { get; init; }
 
     /// <summary>Gets the extra drag coefficient of an empty cell (a crumpled bag of fabric).</summary>
     public float DeflatedDrag { get; init; } = 0.3f;
@@ -135,6 +149,7 @@ public sealed class GliderSimulator
     private readonly int[] _ca, _cb;
     private readonly float[] _rest, _effectiveRest, _compliance, _compression, _deflated;
     private readonly bool[] _bend;
+    private readonly float[] _damping;
     private readonly int[] _nodeStripA, _nodeStripB;
     private readonly float[] _stripFirmness, _nodeFirmness, _stripStiffening, _nodeStiffening;
     private readonly float _trimDynamicPressure;
@@ -195,6 +210,7 @@ public sealed class GliderSimulator
         _tensionOnly = new bool[constraints];
         _deflated = new float[constraints];
         _bend = new bool[constraints];
+        _damping = new float[constraints];
         _dragDiameter = new float[constraints];
         for (int i = 0; i < constraints; i++)
         {
@@ -206,6 +222,12 @@ public sealed class GliderSimulator
             _compression[i] = c.CompressionCompliance;
             _deflated[i] = c.DeflatedCompliance;
             _bend[i] = c.Kind == ConstraintKind.Bend;
+            _damping[i] = c.Kind switch
+            {
+                ConstraintKind.Line or ConstraintKind.Riser => _settings.LineDamping,
+                ConstraintKind.Chordwise or ConstraintKind.Spanwise or ConstraintKind.Shear or ConstraintKind.Rib => _settings.FabricDamping,
+                _ => 0,
+            };
             _tensionOnly[i] = c.TensionOnly;
             _dragDiameter[i] = c.DragDiameter;
         }
@@ -321,12 +343,19 @@ public sealed class GliderSimulator
     public (Vector3 CanopyLift, Vector3 CanopyDrag, Vector3 LineDrag, Vector3 PilotDrag) Forces => (_canopyLift, _canopyDrag, _lineDrag, _pilotDrag);
 
     private Vector3 _canopyLift, _canopyDrag, _lineDrag, _pilotDrag;
+    private (float Profile, float Induced, float Flap, float Deflated, float LiftSum) _dragTerms;
+
+    /// <summary>Gets the canopy drag of the last substep by term (N, sums of magnitudes) and the sum of the strips' lift magnitudes (diagnostics).</summary>
+    public (float Profile, float Induced, float Flap, float Deflated, float LiftSum) CanopyDragTerms => _dragTerms;
 
     /// <summary>Gets the power (W) the canopy aerodynamics and the cell pressure did in the last substep (diagnostics).</summary>
     public float AeroPower { get; private set; }
 
     /// <inheritdoc cref="AeroPower"/>
     public float PressurePower { get; private set; }
+
+    /// <summary>Gets the power (W) of all forces but gravity on all nodes in the last substep, relative to the air (diagnostics).</summary>
+    public float ForcePower { get; private set; }
 
     /// <summary>Gets the angle of attack (degrees) of the center strip.</summary>
     public float CenterAngleOfAttack => _strips.Length > 0 ? _strips[_strips.Length / 2].Alpha : 0;
@@ -399,6 +428,7 @@ public sealed class GliderSimulator
             // Damping only of the motion relative to the center of mass, so it doesn't act like drag.
             var center = invMass > 0 ? momentum / invMass : Vector3.Zero;
             for (int i = 0; i < _count; i++) _velocities[i] = center + (_velocities[i] - center) * damping;
+            if (_settings.LineDamping > 0 || _settings.FabricDamping > 0) DampConstraints();
         }
         Time += dt;
         Rebase();
@@ -596,6 +626,33 @@ public sealed class GliderSimulator
         SurfaceCrossings = crossings;
     }
 
+    // Damps taut lines and stretched fabric on the velocities, after the positions are solved: the relative velocity along
+    // each such constraint loses the configured share (stiff lines and ripstop are nearly inelastic). Damping the positions
+    // instead (XPBD damping) fights the solver's own corrections running down the line chains in its single pass, which
+    // softens the lines and pitches the canopy back.
+    private void DampConstraints()
+    {
+        for (int i = 0; i < _ca.Length; i++)
+        {
+            float share = _damping[i];
+            if (share <= 0) continue;
+            int a = _ca[i], b = _cb[i];
+            float wa = _inverseMass[a], wb = _inverseMass[b];
+            float w = wa + wb;
+            if (w == 0) continue;
+            var d = _positions[a] - _positions[b];
+            float length = d.Length();
+            // Only while taut (lines) or stretched (fabric).
+            if (length < 1e-9f || length < _effectiveRest[i]) continue;
+            var n = d / length;
+            float relative = Vector3.Dot(_velocities[a] - _velocities[b], n);
+            float fraction = Math.Clamp(share, 0, 1);
+            var impulse = n * (relative * fraction / w);
+            _velocities[a] -= impulse * wa;
+            _velocities[b] += impulse * wb;
+        }
+    }
+
     // One Gauss-Seidel pass in a fixed order (alternating the direction every substep makes stiff networks oscillate).
     private void SolveConstraints(float h)
     {
@@ -636,6 +693,7 @@ public sealed class GliderSimulator
         Array.Copy(_weight, _forces, _count);
 
         _canopyLift = _canopyDrag = _lineDrag = _pilotDrag = Vector3.Zero;
+        _dragTerms = default;
         AeroPower = PressurePower = 0;
         if (!_settings.Aerodynamics) { UpdatePressure(dt); return; }
 
@@ -664,7 +722,11 @@ public sealed class GliderSimulator
         if (_settings.Aerodynamics) for (int s = 0; s < _strips.Length; s++) ApplyStripAerodynamics(_strips[s], rho, wind, aspect);
         UpdatePressure(dt);
         if (_settings.Pressure) for (int s = 0; s < _strips.Length; s++) ApplyPressure(_strips[s], _pressure[s], rho);
+        float power = 0;
+        for (int i = 0; i < _count; i++) power += Vector3.Dot(_forces[i] - _weight[i], _velocities[i] - wind);
+        ForcePower = power;
     }
+
 
     private void ApplyStripAerodynamics(StripData strip, float rho, Vector3 wind, float aspect)
     {
@@ -719,6 +781,7 @@ public sealed class GliderSimulator
             induced = 0.5f * induced + 0.5f * (float)((clIteration + flapLift) * inducedFactor);
         }
         var (cl, cd, cm) = Polar(alphaDegrees - induced * 180 / MathF.PI);
+        double profileCd = cd;
         cl += flapLift;
         // A deflated cell is a crumpled bag, not an airfoil: it loses most of its lift and drags more.
         double inflation = Math.Clamp(_pressure[strip.Index], 0, 1);
@@ -751,6 +814,11 @@ public sealed class GliderSimulator
         var force = (liftDir * (float)cl + flowDir * (float)cd) * (q * area);
         _canopyLift += liftDir * (float)(cl * q * area);
         _canopyDrag += flowDir * (float)(cd * q * area);
+        _dragTerms.Profile += (float)(profileCd * q * area);
+        _dragTerms.Induced += (float)(cl * induced * q * area);
+        _dragTerms.Flap += 0.6f * flap * flap * q * area;
+        _dragTerms.Deflated += (float)(_settings.DeflatedDrag * (1 - inflation) * q * area);
+        _dragTerms.LiftSum += (float)(Math.Abs(cl) * q * area);
 
         // Pitch damping: a strip rotating nose-up (its leading edge rising against its trailing edge) meets a nose-down
         // moment, −π/8·ωc/V of q·S·c (thin airfoil, quasi-steady), as a couple ±M/c on the leading and trailing edge.

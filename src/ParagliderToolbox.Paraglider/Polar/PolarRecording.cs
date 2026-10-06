@@ -30,7 +30,7 @@ public sealed record PolarPoint
     /// <summary>Gets the mean horizontal speed (m/s).</summary>
     public float HorizontalSpeed { get; init; }
 
-    /// <summary>Gets the mean sink rate (m/s, positive down).</summary>
+    /// <summary>Gets the mean sink rate (m/s), total-energy compensated: speed lost or gained while measuring counts as height.</summary>
     public float SinkRate { get; init; }
 
     /// <summary>Gets the glide ratio: horizontal speed / sink rate.</summary>
