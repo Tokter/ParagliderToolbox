@@ -97,6 +97,9 @@ public sealed record SimulatorSettings
     /// </summary>
     public float FabricDamping { get; init; }
 
+    /// <summary>Gets whether the simulator tracks where the energy goes in each substep (<see cref="GliderSimulator.Energy"/>); costs time.</summary>
+    public bool EnergyDiagnostics { get; init; }
+
     /// <summary>Gets the extra drag coefficient of an empty cell (a crumpled bag of fabric).</summary>
     public float DeflatedDrag { get; init; } = 0.3f;
 }
@@ -298,8 +301,8 @@ public sealed class GliderSimulator
     public SimulationInputs Inputs { get; } = new();
 
     /// <summary>
-    /// Gets the node positions relative to <see cref="Origin"/>. The simulation keeps the glider near the origin (floats
-    /// lose the precision the stiff constraints need hundreds of meters away), so world positions are
+    /// Gets the node positions relative to <see cref="Origin"/>. The simulation keeps the glider within a meter of the origin (floats
+    /// lose the precision the stiff constraints need even a few meters away), so world positions are
     /// <see cref="Origin"/> plus these.
     /// </summary>
     public ReadOnlySpan<Vector3> Positions => _positions;
@@ -406,15 +409,22 @@ public sealed class GliderSimulator
             // Forces every substep: the aerodynamic damping of the light canopy nodes is too stiff for a frame-long step.
             ComputeForces(h);
             UpdateFirmness();
+            bool track = _settings.EnergyDiagnostics;
+            double e0 = track ? SystemEnergy(false, h) : 0, external = 0;
             for (int i = 0; i < _count; i++)
             {
                 _previous[i] = _positions[i];
                 if (_inverseMass[i] == 0) continue;
+                var before = _velocities[i];
                 _velocities[i] += _forces[i] * (_inverseMass[i] * h);
                 _positions[i] += _velocities[i] * h;
+                if (track) external += Vector3.Dot(_forces[i] - _weight[i], (before + _velocities[i]) * 0.5f) * h;
             }
+            double e1 = track ? SystemEnergy(false, h) : 0;
             SolveConstraints(h);
+            double e2 = track ? SystemEnergy(true, h) : 0;
             SeparateSurfaces();
+            double e3 = track ? SystemEnergy(true, h) : 0;
             float invH = 1 / h;
             float invMass = 0;
             var momentum = Vector3.Zero;
@@ -429,17 +439,66 @@ public sealed class GliderSimulator
             var center = invMass > 0 ? momentum / invMass : Vector3.Zero;
             for (int i = 0; i < _count; i++) _velocities[i] = center + (_velocities[i] - center) * damping;
             if (_settings.LineDamping > 0 || _settings.FabricDamping > 0) DampConstraints();
+            if (track)
+            {
+                double e4 = SystemEnergy(false, h);
+                _energy = _energy with
+                {
+                    Forces = _energy.Forces + (e1 - e0), ExternalWork = _energy.ExternalWork + external,
+                    Constraints = _energy.Constraints + (e2 - e1), Separation = _energy.Separation + (e3 - e2), Damping = _energy.Damping + (e4 - e3),
+                };
+            }
         }
         Time += dt;
         Rebase();
     }
 
-    // Moves the glider back to the origin once the pilot is more than a few meters away, keeping float precision.
+    /// <summary>
+    /// Where the system's energy went, accumulated over all substeps since the start (J) when
+    /// <see cref="SimulatorSettings.EnergyDiagnostics"/> is on: the change of kinetic plus potential energy in each stage of
+    /// a substep, and the work the non-gravity forces should have done.
+    /// </summary>
+    /// <param name="Forces">Integrating the forces (gravity, aerodynamics, pressure): should equal <c>ExternalWork</c> plus the gravity it converts.</param>
+    /// <param name="ExternalWork">The work of the non-gravity forces over the integration (force · mean velocity · h).</param>
+    /// <param name="Constraints">Projecting the constraints: ideal constraints do no work.</param>
+    /// <param name="Separation">Keeping the skins apart.</param>
+    /// <param name="Damping">Velocity damping.</param>
+    public readonly record struct EnergyFlow(double Forces, double ExternalWork, double Constraints, double Separation, double Damping);
+
+    private EnergyFlow _energy;
+
+    /// <summary>Gets where the energy went (see <see cref="EnergyFlow"/>; zero unless <see cref="SimulatorSettings.EnergyDiagnostics"/> is on).</summary>
+    public EnergyFlow Energy => _energy;
+
+    // Kinetic plus potential energy (J) of all nodes; the velocities either as they are or, in the middle of a substep,
+    // from the positions moved since its start.
+    private double SystemEnergy(bool velocitiesFromPositions, float h)
+    {
+        double energy = 0;
+        for (int i = 0; i < _count; i++)
+        {
+            if (_inverseMass[i] == 0) continue;
+            var v = velocitiesFromPositions ? (_positions[i] - _previous[i]) / h : _velocities[i];
+            energy += 0.5 / _inverseMass[i] * v.LengthSquared() - Vector3.Dot(_weight[i], _positions[i]);
+        }
+        return energy;
+    }
+
+    // Keeps the middle of the system within a meter of the origin. Float precision matters even a few meters out: with the
+    // glider allowed 16 m away, rounding in the stiff constraints biased the sink by ±10% (wandering over tens of seconds,
+    // and depending on the flight direction).
     private void Rebase()
     {
-        var pilot = _positions[_model.Pilot];
-        if (MathF.Abs(pilot.X) + MathF.Abs(pilot.Y) + MathF.Abs(pilot.Z) < 16) return;
-        var shift = new Vector3(MathF.Round(pilot.X), MathF.Round(pilot.Y), MathF.Round(pilot.Z));
+        // The middle of the system (between the pilot and the canopy), so neither end is far from the origin.
+        var middle = _positions[_model.Pilot];
+        if (_model.Sections.Count > 0)
+        {
+            var section = _model.Sections[_model.Sections.Count / 2];
+            middle = (middle + (_positions[section.LeadingEdge] + _positions[section.TrailingEdge]) * 0.5f) * 0.5f;
+        }
+        if (MathF.Abs(middle.X) + MathF.Abs(middle.Y) + MathF.Abs(middle.Z) < 1) return;
+        // Whole meters: subtracting them is exact in floats.
+        var shift = new Vector3(MathF.Round(middle.X), MathF.Round(middle.Y), MathF.Round(middle.Z));
         for (int i = 0; i < _count; i++) _positions[i] -= shift;
         Origin = (Origin.X + shift.X, Origin.Y + shift.Y, Origin.Z + shift.Z);
     }

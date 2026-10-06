@@ -113,8 +113,10 @@ Per frame (e.g. 1/60 s), `substeps` times (16 for Medium; more for High):
    weighted by `1/m`. Without this, limp empty cells let one skin pass through the other, and the pressure on the
    inverted pocket holds it there.
 5. **Velocities**: `v = (x − x_prev)/h`; damp only the motion relative to the center of mass.
-6. Keep the glider near the origin (shift all positions, accumulate the offset in double precision): far from the
-   origin floats lose the precision the stiff constraints need and the solver gains energy.
+6. **Keep the glider at the origin**: after every step, shift all positions by whole meters (exact in floats) so the
+   middle of the system (between the pilot and the canopy) stays within a meter of the origin, and accumulate the
+   offset in double precision. Float precision matters even a few meters out: allowing 16 m, rounding in the stiff
+   constraints biased the sink rate by ±10%, wandering over tens of seconds and depending on the flight direction.
 
 Start each flight with every node moving at `trimAirspeed` along a path `trimFlightPathAngle` below the horizon.
 

@@ -21,7 +21,7 @@ public sealed class SectionPolar
     {
         ZeroLiftAlpha = -(design.Camber * 100 * 0.95) + design.Reflex * 100 * 1.2;
         StallAlpha = 12 + (design.RootThickness - 0.14) * 60;
-        ProfileDrag = 0.009 + design.Ballooning * 0.04;
+        ProfileDrag = 0.0075 + design.Ballooning * 0.04;
         MomentCoefficient = -(design.Camber * 2.2) + design.Reflex * 9;
     }
 

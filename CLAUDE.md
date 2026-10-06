@@ -96,10 +96,11 @@ simulation algorithm for game developers; keep it in sync with the simulator.
   masses in both the integration and the constraint projection.
   **Calibration**: drag (`SectionPolar` Cd0 = 0.009 + 0.04·ballooning, k = 0.004; `SpanEfficiency` 1.25; pilot drag
   area 0.33) is fitted to Flybubble's class polars (EN-B: trim 36 km/h at 1.11 m/s, top 48 km/h at 1.90 m/s); the
-  presets' trim angles and (effective) speed bar travel set their trim and top speeds. Judge glide by the force balance
-  (canopy lift / total drag) or long averages: the sink of a simulated wing wanders about ±8% over tens of seconds
-  (a solver-level energy exchange, present at every proxy complexity, larger with more substeps; not yet understood), so
-  short polar windows scatter. The polar recorder compensates for speed changes (total-energy sink).
+  presets' trim angles and (effective) speed bar travel set their trim and top speeds. The polar recorder compensates
+  for speed changes (total-energy sink); the force balance (canopy lift / total drag) must match the measured glide.
+  **Float precision**: the simulator re-centers the system (pilot–canopy middle) within a meter of the origin after
+  every step. At 16 m, rounding in the stiff constraints made the sink wander ±10% over tens of seconds and depend on
+  the flight direction; `SimulatorSettings.EnergyDiagnostics` (energy per substep stage) is how that was found.
   Tests in `SimulationTests` pin the flight envelope and the shapes (trim, brakes and handles, slack brake lines, speed
   bar, collapse, big ears, frontal span fold, full stall and recovery); rerun them after any physics change.
   `PolarRecorder` shows the polar effect. For visual checks of shapes, a headless renderer of the proxy (orthographic

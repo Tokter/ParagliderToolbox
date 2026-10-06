@@ -104,7 +104,7 @@ public class SimulationTests
         var sim = Simulator(ProxyComplexity.Arcade);
         Average(sim, 30);
 
-        Assert.True(sim.PilotPosition.Length() < 40, $"local {sim.PilotPosition}");
+        Assert.True(sim.PilotPosition.Length() < 10, $"local {sim.PilotPosition}");
         Assert.True(sim.Origin.Z > 200, $"flew {sim.Origin.Z} m forward");
         Assert.All(sim.Positions.ToArray(), p => Assert.False(float.IsNaN(p.X)));
     }
@@ -306,7 +306,7 @@ public class SimulationTests
     public void DefaultWing_FliesTheEnBReferencePolar()
     {
         // Progression EN-B reference (Flybubble): trim 36 km/h at 1.11 m/s sink (glide 9), top speed 48 km/h at 1.90 m/s
-        // (glide 7). Averaged over 30 s: the sink of a simulated wing wanders a few percent over tens of seconds.
+        // (glide 7), averaged over 30 s.
         var sim = Simulator();
         Average(sim, 15);
         var (trimSpeed, trimSink) = Average(sim, 30);
@@ -319,5 +319,17 @@ public class SimulationTests
         Assert.InRange(trimSpeed / trimSink, 7.8f, 10);
         Assert.InRange(topSpeed * 3.6f, 45, 52);
         Assert.InRange(topSink, 1.6f, 2.3f);
+    }
+
+    [Fact]
+    public void SteadyGlide_HasASteadySinkRate()
+    {
+        // Positions far from the origin (16 m was allowed) made the sink wander ±10% over tens of seconds through rounding
+        // in the stiff constraints; re-centering every step keeps successive windows within a few percent.
+        var sim = Simulator();
+        Average(sim, 15);
+        var sinks = Enumerable.Range(0, 3).Select(_ => Average(sim, 10).Sink).ToArray();
+        float mean = sinks.Average();
+        Assert.All(sinks, s => Assert.InRange(s, mean * 0.97f, mean * 1.03f));
     }
 }
