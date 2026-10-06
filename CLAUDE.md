@@ -80,7 +80,9 @@ simulation algorithm for game developers; keep it in sync with the simulator.
   bar steps and the brake steps (stopping at the first stall), ramp → settle → measure per setting; deterministic, so
   two recordings of one design are identical (an optimizer can compare them). `Summarize` fits a cubic sink(v) through
   the steady points for min sink and best glide (tangent from the origin). `PolarRecording` keeps the design, the
-  settings, every sample and the points; `PolarCsv` writes them. Tests in `PolarRecorderTests`.
+  settings, every sample and the points; `PolarCsv` writes them. Tests in `PolarRecorderTests`. In the module,
+  `PolarRecorderOptions` is the editable form of the settings (step counts, times) shown by
+  `ParagliderActions.AskPolarSettingsAsync` through `IShellDialogs.EditPropertiesAsync` (a property grid in a dialog).
 - **Module**: `ParagliderNode` (a `ContainerNode` holding its `PolarNode`s; the parameters as [Inspectable] properties forwarding to a `GliderDesign`; colors saved as
   hex; `Snapshot()` for the generator thread), `ParagliderPreview` (debounced background generation, Scene3D, simulation
   loop driven by `Viewport3D.Rendered`), `ParagliderDetailView`, `ParagliderActions` (global export commands),

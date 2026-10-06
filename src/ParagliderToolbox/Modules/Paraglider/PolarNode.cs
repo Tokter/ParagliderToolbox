@@ -36,7 +36,7 @@ public partial class PolarNode : ProjectNode
     private static readonly string[] FigureNames =
     [
         nameof(Recorded), nameof(Trim), nameof(FullSpeed), nameof(MinSink), nameof(BestGlide), nameof(MinSpeed), nameof(MaxSink),
-        nameof(SpeedRange), nameof(StallBrake), nameof(Complexity), nameof(SteadyPoints),
+        nameof(SpeedRange), nameof(StallBrake), nameof(Complexity), nameof(SteadyPoints), nameof(Sweep), nameof(Timing),
     ];
 
     private PolarSummary Summary => _recording.Summary;
@@ -75,5 +75,14 @@ public partial class PolarNode : ProjectNode
     public double SpeedRange => Math.Round(Summary.SpeedRange * 3.6, 1);
 
     [InspectableProperty("Stall at brakes", "Polar", Order = 17, IsReadOnly = true, Description = "The symmetric brake input the glider stalled at.")]
-    public string StallBrake => Summary.StallBrake is { } brake ? brake.ToString("P0", CultureInfo.CurrentCulture) : "no stall";
+    public string StallBrake => Summary.StallBrake is { } brake ? PolarRecorderSettings.Percent(brake) : "no stall";
+
+    private PolarRecorderSettings Settings => _recording.Settings;
+
+    [InspectableProperty("Sweep", "Settings", Order = 20, IsReadOnly = true, Description = "The speed bar and brake steps flown (the brakes until the stall).")]
+    public string Sweep => $"{Settings.SpeedBarSteps.Length} speed bar, {Settings.BrakeSteps.Length} brake steps to {PolarRecorderSettings.Percent(Settings.BrakeSteps.DefaultIfEmpty(0).Max())}";
+
+    [InspectableProperty("Timing", "Settings", Order = 21, IsReadOnly = true, Description = "Per setting: ramp, settle and measure time, and the samples stored per second.")]
+    public string Timing => string.Create(CultureInfo.CurrentCulture,
+        $"ramp {Settings.RampSeconds:0.#} s, settle {Settings.SettleSeconds:0.#} s, measure {Settings.MeasureSeconds:0.#} s, {1 / Settings.SampleInterval:0.#}/s");
 }

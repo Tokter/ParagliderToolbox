@@ -379,7 +379,7 @@ public sealed partial class ParagliderPreview : ObservableObject, IDisposable
 
     [RelayCommand(AllowConcurrentExecutions = true)]
     [property: Command("RecordPolar", Group, Label = "Record polar", Icon = MaterialIcons.ShowChart,
-        Description = "Fly through the whole speed range (speed bar, then brakes until the stall), record the polar and store it with the paraglider; again to cancel",
+        Description = "Choose the settings, then fly through the whole speed range (speed bar, then brakes until the stall), record the polar and store it with the paraglider; again to cancel",
         DefaultKeybinding = "Ctrl+P")]
     private async Task RecordPolarAsync()
     {
@@ -389,6 +389,11 @@ public sealed partial class ParagliderPreview : ObservableObject, IDisposable
             return;
         }
         if (Model is not { } model) return;
+        PauseSimulation();
+        var settings = await _actions().AskPolarSettingsAsync(_node);
+        // The design may have changed while the dialog was open, and only one recording runs at a time.
+        if (settings is null || IsRecordingPolar || _disposed || Model is not { } current) return;
+        model = current;
         StopSimulation();
         var cancellation = _polarCancellation = new CancellationTokenSource();
         IsRecordingPolar = true;
@@ -406,7 +411,7 @@ public sealed partial class ParagliderPreview : ObservableObject, IDisposable
         try
         {
             var recording = await Task.Run(() =>
-                ParagliderToolbox.Paraglider.Polar.PolarRecorder.Record(model.Proxy.Model, model.Design, null, progress, cancellation.Token));
+                ParagliderToolbox.Paraglider.Polar.PolarRecorder.Record(model.Proxy.Model, model.Design, settings, progress, cancellation.Token));
             // A canceled recording is kept when it measured something besides trim.
             if (!_disposed && recording.Points.Count > (recording.IsComplete ? 0 : 1)) _actions().AddPolar(_node, recording);
         }

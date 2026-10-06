@@ -347,6 +347,27 @@ public sealed class MainView : KeybindingHandler, IShellDialogs
     }
 
     /// <inheritdoc/>
+    public async Task<bool> EditPropertiesAsync(string title, object target, string confirmText, string? message = null)
+    {
+        var grid = new PropertyGrid().IsDescriptionVisible(true).LabelWidth(180).Width(560).Height(480);
+        foreach (string category in _toolbox.PropertyCategoryOrder.Distinct()) grid.CategoryOrder.Add(category);
+        ToolboxPropertyEditors.Register(grid.EditorRegistry);
+        foreach (var setup in _toolbox.PropertyEditors) setup(grid.EditorRegistry);
+        grid.SelectedObject = target;
+
+        var content = message is null
+            ? (UIElement)grid
+            : new StackPanel().Spacing(12).Children(new TextBlock(message).BodyMedium().TextWrapping().Width(560), grid);
+        var response = await new Dialog(title)
+            .Content(content)
+            .AddButton("Cancel", DialogResult.Cancel, isCancel: true)
+            .AddButton(confirmText, DialogResult.Ok, isDefault: true, variant: ButtonVariant.Filled)
+            .MaxWidth(640)
+            .ShowAsync(this);
+        return response.Result == DialogResult.Ok;
+    }
+
+    /// <inheritdoc/>
     public void ShowCommandPalette() =>
         CommandPalette.Show(this, c => !(c.Descriptor.Group == ShellViewModel.Group && c.Descriptor.Name == "CommandPalette"));
 

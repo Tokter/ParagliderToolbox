@@ -1,3 +1,4 @@
+using System.Globalization;
 using ParagliderToolbox.Paraglider.Design;
 
 namespace ParagliderToolbox.Paraglider.Polar;
@@ -129,6 +130,20 @@ public sealed record PolarRecorderSettings
 
     /// <summary>Gets the vertical speed spread (m/s) below which a setting counts as steady.</summary>
     public float StableSpread { get; init; } = 0.6f;
+
+    /// <summary>
+    /// Gets the simulated flight time (s) of the whole sweep. A recording takes less when the glider stalls before the
+    /// last brake setting.
+    /// </summary>
+    public float FlightSeconds =>
+        StartSeconds + SettleSeconds + MeasureSeconds + (SpeedBarSteps.Length + BrakeSteps.Length) * (RampSeconds + SettleSeconds + MeasureSeconds);
+
+    /// <summary>Returns <paramref name="count"/> evenly spaced settings up to <paramref name="maximum"/>: 4 and 1 give 0.25, 0.5, 0.75, 1.</summary>
+    public static float[] EvenSteps(int count, float maximum = 1) =>
+        Enumerable.Range(1, Math.Max(0, count)).Select(i => maximum * i / count).ToArray();
+
+    /// <summary>Formats a control setting as a percentage: 0.25 → "25%", 0.125 → "12.5%".</summary>
+    public static string Percent(float setting) => string.Create(CultureInfo.CurrentCulture, $"{setting * 100:0.#}%");
 }
 
 /// <summary>

@@ -106,7 +106,7 @@ public sealed class ParagliderDetailView : KeybindingHandler
                 .Variant(ButtonVariant.Tonal)
                 .Command(_preview.RecordPolarCommand)
                 .Height(30).MinHeight(0).Padding(12, 0)
-                .ToolTip("Fly through the whole speed range and record the polar (Ctrl+P); again to cancel")
+                .ToolTip("Choose the settings and record the polar: the whole speed range, from full speed bar to the stall (Ctrl+P); again to cancel")
                 .Content(new StackPanel().Orientation(Orientation.Horizontal).Spacing(6).Children(
                     new Icon().Size(18).VerticalAlignment(VerticalAlignment.Center).BindKind(_preview, p => p.IsRecordingPolar ? MaterialIconKind.Stop : MaterialIconKind.ShowChart),
                     new TextBlock().VerticalAlignment(VerticalAlignment.Center).BindText(_preview, p => p.IsRecordingPolar ? "Cancel polar" : "Polar"))));

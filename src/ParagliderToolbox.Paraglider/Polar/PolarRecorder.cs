@@ -42,10 +42,9 @@ public static class PolarRecorder
         var points = new List<PolarPoint>();
 
         var plan = new List<(string Label, float Bar, float Brake, bool IsBrake)> { ("Trim", 0, 0, false) };
-        plan.AddRange(settings.SpeedBarSteps.Select(b => ($"Speed bar {b:P0}", b, 0f, false)));
-        plan.AddRange(settings.BrakeSteps.Select(b => ($"Brakes {b:P0}", 0f, b, true)));
-        float perSetting = settings.RampSeconds + settings.SettleSeconds + settings.MeasureSeconds;
-        float total = settings.StartSeconds + settings.SettleSeconds + settings.MeasureSeconds + (plan.Count - 1) * perSetting;
+        plan.AddRange(settings.SpeedBarSteps.Select(b => ($"Speed bar {PolarRecorderSettings.Percent(b)}", b, 0f, false)));
+        plan.AddRange(settings.BrakeSteps.Select(b => ($"Brakes {PolarRecorderSettings.Percent(b)}", 0f, b, true)));
+        float total = settings.FlightSeconds;
 
         float bar = 0, brake = 0, nextSample = 0;
         string phase = "Trim";

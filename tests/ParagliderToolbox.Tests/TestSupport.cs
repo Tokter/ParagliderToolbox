@@ -64,6 +64,9 @@ public sealed class FakeDialogs : IShellDialogs
     public Task<string?> PickFolderAsync(string title, string? initialDirectory) { Asked.Add($"Folder:{title}"); return Task.FromResult(FolderAnswer); }
     public Task<bool> ConfirmAsync(string title, string message, string confirmText) { Asked.Add($"Confirm:{title}"); return Task.FromResult(ConfirmAnswer); }
     public Task<string?> AskTextAsync(string title, string label, string text) { Asked.Add($"Text:{title}"); return Task.FromResult(TextAnswer); }
+    public bool EditAnswer { get; set; } = true;
+    public Action<object>? EditAction { get; set; }
+    public Task<bool> EditPropertiesAsync(string title, object target, string confirmText, string? message = null) { Asked.Add($"Edit:{title}"); EditAction?.Invoke(target); return Task.FromResult(EditAnswer); }
     public void ShowCommandPalette() => Asked.Add("Palette");
     public void ShowKeybindingEditor() => Asked.Add("Keybindings");
     public void ResetLayout() => Asked.Add("ResetLayout");

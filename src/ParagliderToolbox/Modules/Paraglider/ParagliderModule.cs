@@ -38,7 +38,8 @@ public sealed class ParagliderModule : IToolboxModule
 
         toolbox.PropertyEditors.Add(registry => registry.Register<Curve>(CurvePropertyEditor.Create));
         toolbox.PropertyCategoryOrder.AddRange(ParagliderNode.CategoryOrder);
-        toolbox.PropertyCategoryOrder.AddRange(["Polar", "Recording"]);
+        toolbox.PropertyCategoryOrder.AddRange(["Polar", "Recording", "Settings"]);
+        toolbox.PropertyCategoryOrder.AddRange(PolarRecorderOptions.CategoryOrder);
         toolbox.NodeTypes.Register<PolarNode>("polar", "Polar", MaterialIconKind.ShowChart, isCreatable: false,
             description: "A recorded polar curve of a paraglider");
 

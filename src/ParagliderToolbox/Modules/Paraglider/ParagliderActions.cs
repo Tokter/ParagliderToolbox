@@ -100,6 +100,24 @@ public sealed partial class ParagliderActions : ObservableObject
         }
     }
 
+    /// <summary>
+    /// Asks how to fly a polar of <paramref name="node"/>; returns the settings, or <c>null</c> when canceled. Starts from
+    /// the settings used last in this session, else those of the paraglider's latest polar, else the defaults.
+    /// </summary>
+    public async Task<ParagliderToolbox.Paraglider.Polar.PolarRecorderSettings?> AskPolarSettingsAsync(ParagliderNode node)
+    {
+        var initial = _lastPolarSettings ?? node.Polars.LastOrDefault()?.Recording.Settings ?? new();
+        var options = PolarRecorderOptions.FromSettings(initial);
+        if (!await _toolbox.Dialogs.EditPropertiesAsync("Record polar", options, "Record",
+            $"Flies '{node.Name}' through trim, the speed bar and the brakes until it stalls, measuring the airspeed and sink rate at each setting."))
+        {
+            return null;
+        }
+        return _lastPolarSettings = options.ToSettings();
+    }
+
+    private ParagliderToolbox.Paraglider.Polar.PolarRecorderSettings? _lastPolarSettings;
+
     /// <summary>Stores <paramref name="recording"/> as a polar under <paramref name="node"/> and selects it.</summary>
     public PolarNode AddPolar(ParagliderNode node, ParagliderToolbox.Paraglider.Polar.PolarRecording recording)
     {

@@ -104,6 +104,30 @@ public class PolarRecorderTests
         _ = progress;
     }
 
+
+    [Fact]
+    public void EvenSteps_SpaceTheSettingsUpToTheMaximum()
+    {
+        Assert.Equal([0.25f, 0.5f, 0.75f, 1f], PolarRecorderSettings.EvenSteps(4));
+        Assert.Equal([0.4f, 0.8f], PolarRecorderSettings.EvenSteps(2, 0.8f));
+        Assert.Empty(PolarRecorderSettings.EvenSteps(0));
+    }
+
+    [Fact]
+    public void FlightSeconds_CoversEverySetting()
+    {
+        var settings = new PolarRecorderSettings { SpeedBarSteps = [1f], BrakeSteps = [0.5f, 1f], StartSeconds = 10, RampSeconds = 1, SettleSeconds = 2, MeasureSeconds = 3 };
+        Assert.Equal(10 + 2 + 3 + 3 * (1 + 2 + 3), settings.FlightSeconds);
+    }
+
+    [Fact]
+    public void FinerSteps_FlyMoreSettings_WithTheirPercentagesAsLabels()
+    {
+        var settings = Quick with { SpeedBarSteps = PolarRecorderSettings.EvenSteps(8), BrakeSteps = [], StartSeconds = 3, SettleSeconds = 1, MeasureSeconds = 1 };
+        var recording = PolarRecorder.Record(new GliderDesign { ProxyComplexity = ProxyComplexity.Arcade }, settings);
+        Assert.Equal(9, recording.Points.Count);
+        Assert.Equal($"Speed bar {12.5.ToString("0.#", System.Globalization.CultureInfo.CurrentCulture)}%", recording.Points[1].Label);
+    }
     private sealed class SynchronousProgress(Action<PolarProgress> report) : IProgress<PolarProgress>
     {
         public void Report(PolarProgress value) => report(value);

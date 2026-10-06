@@ -50,6 +50,13 @@ public interface IShellDialogs
     /// <summary>Asks for a line of text; returns it, or <c>null</c> when canceled.</summary>
     Task<string?> AskTextAsync(string title, string label, string text);
 
+    /// <summary>
+    /// Shows <paramref name="target"/>'s properties in a property grid (an [Inspectable] object, edited in place, with
+    /// the toolbox's property editors) under an optional <paramref name="message"/>; returns whether
+    /// <paramref name="confirmText"/> was chosen. Edit a copy when canceling must not change anything.
+    /// </summary>
+    Task<bool> EditPropertiesAsync(string title, object target, string confirmText, string? message = null);
+
     /// <summary>Opens the command palette.</summary>
     void ShowCommandPalette();
 

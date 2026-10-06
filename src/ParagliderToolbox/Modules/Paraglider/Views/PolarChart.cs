@@ -96,7 +96,7 @@ public sealed class PolarChart
         if (recording.Points.FirstOrDefault(p => p.IsStalled && p.Brake > 0) is { } stall)
         {
             _chart.Annotations.Add(new ChartAnnotation(stall.Airspeed * Kmh, -stall.SinkRate,
-                string.Create(CultureInfo.CurrentCulture, $"Stall at {stall.Brake:P0} brakes\n{stall.Airspeed * Kmh:0} km/h · −{stall.SinkRate:0.0} m/s"))
+                string.Create(CultureInfo.CurrentCulture, $"Stall at {PolarRecorderSettings.Percent(stall.Brake)} brakes\n{stall.Airspeed * Kmh:0} km/h · −{stall.SinkRate:0.0} m/s"))
             {
                 Color = Color.FromRgb(0xE5, 0x39, 0x35),
                 Marker = ChartMarker.Triangle,

@@ -63,10 +63,12 @@ as you edit (a few hundred milliseconds) and can fly it.
   |---|---|
   | ![Simulation of an asymmetric collapse](docs/images/ui-simulation.png) | ![The physics proxy](docs/images/ui-proxy.png) |
 - **Polar recorder** (Polar button, Ctrl+P): flies the proxy headless and deterministically through the speed range
-  (trim, speed bar 25–100 %, then symmetric brakes in 10 % steps until it stalls), settling and then measuring each
-  setting, and plots the samples live. The result is stored as a polar under the paraglider (with the design it was
-  recorded with and every sample) and shown on a zoomable chart with trim, full speed, best glide (tangent from the
-  origin to the fitted curve), min sink, min speed, max sink and the stall labeled, plus a table of every setting.
+  (trim, the speed bar steps, then symmetric brake steps until it stalls), settling and then measuring each setting,
+  and plots the samples live. A dialog sets it up first: the number of speed bar and brake steps (4 and 10 by default:
+  25 % and 10 % apart), the maximum brake, start, ramp, settle and measure times, samples per second, and the stall and
+  steadiness thresholds, with the resulting flight time. The result is stored as a polar under the paraglider (with the
+  design and settings it was recorded with and every sample) and shown on a zoomable chart with trim, full speed, best
+  glide (tangent from the origin to the fitted curve), min sink, min speed, max sink and the stall labeled, plus a table of every setting.
   Export it as CSV. `PolarRecorder` is UI-free, the building block for an optimizer that tweaks parameters and
   compares polars.
 

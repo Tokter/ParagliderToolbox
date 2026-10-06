@@ -148,4 +148,70 @@ public class ParagliderModuleTests
         Assert.Equal(ProxyComplexity.Arcade, polar.Recording.Design!.ProxyComplexity);
         Assert.Equal(polar.Trim, new PolarNode { Recording = recording }.Trim);
     }
+
+    [Fact]
+    public void PolarOptions_RoundTripTheRecorderSettings()
+    {
+        var settings = new ParagliderToolbox.Paraglider.Polar.PolarRecorderSettings
+        {
+            SpeedBarSteps = ParagliderToolbox.Paraglider.Polar.PolarRecorderSettings.EvenSteps(8),
+            BrakeSteps = ParagliderToolbox.Paraglider.Polar.PolarRecorderSettings.EvenSteps(20, 0.8f),
+            SettleSeconds = 12, MeasureSeconds = 10, SampleInterval = 0.1f, StableSpread = 0.6f,
+        };
+        var options = PolarRecorderOptions.FromSettings(settings);
+
+        Assert.Equal(8, options.SpeedBarSteps);
+        Assert.Equal(20, options.BrakeSteps);
+        Assert.Equal(0.8, options.MaxBrake);
+        Assert.Equal(0.6, options.StableSpread);
+        Assert.Equal(100, options.SamplesPerSetting);
+        var copy = options.ToSettings();
+        Assert.Equal(settings.SpeedBarSteps, copy.SpeedBarSteps);
+        Assert.Equal(settings.BrakeSteps, copy.BrakeSteps);
+        Assert.Equal(settings.FlightSeconds, copy.FlightSeconds, 3);
+    }
+
+    [Fact]
+    public void PolarOptions_UpdateTheirEstimates()
+    {
+        var options = new PolarRecorderOptions();
+        var changed = new List<string?>();
+        options.PropertyChanged += (_, e) => changed.Add(e.PropertyName);
+        string before = options.FlightTime;
+
+        options.BrakeSteps = 20;
+
+        Assert.NotEqual(before, options.FlightTime);
+        Assert.Contains(nameof(PolarRecorderOptions.FlightTime), changed);
+        Assert.Contains(nameof(PolarRecorderOptions.BrakeSettings), changed);
+        Assert.Equal(PolarRecorderOptions.CategoryOrder.Order(), ObjectInspector.GetProperties(options).Select(p => p.Category!).Distinct().Order());
+    }
+
+    [Fact]
+    public async Task AskingForPolarSettings_StartsFromTheLatestPolar_AndRemembersTheChoice()
+    {
+        var dialogs = new FakeDialogs();
+        var toolbox = CreateToolbox(dialogs);
+        var actions = new ParagliderActions(toolbox);
+        var node = new ParagliderNode();
+        node.Children.Add(new PolarNode { Recording = new() { Settings = new() { SettleSeconds = 15 } } });
+        PolarRecorderOptions? shown = null;
+        dialogs.EditAction = target =>
+        {
+            shown = (PolarRecorderOptions)target;
+            shown.BrakeSteps = 20;
+        };
+
+        var settings = await actions.AskPolarSettingsAsync(node);
+
+        Assert.Equal(15, shown!.SettleSeconds);
+        Assert.Equal(20, settings!.BrakeSteps.Length);
+        Assert.Contains("Edit:Record polar", dialogs.Asked);
+
+        dialogs.EditAction = target => Assert.Equal(20, ((PolarRecorderOptions)target).BrakeSteps);
+        Assert.NotNull(await actions.AskPolarSettingsAsync(new ParagliderNode()));
+
+        dialogs.EditAnswer = false;
+        Assert.Null(await actions.AskPolarSettingsAsync(node));
+    }
 }
