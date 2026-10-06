@@ -63,6 +63,13 @@ public sealed record SimulatorSettings
     /// </summary>
     public bool EnclosedAir { get; init; }
 
+    /// <summary>
+    /// Gets the gap (fraction of the rest profile height) the upper skin keeps above the lower skin at every chord
+    /// station, measured across the local fabric; 0 turns the separation off. Empty cells are limp, and without it a skin
+    /// can pass through the other and the pressure on the inverted pocket keeps it there.
+    /// </summary>
+    public float SurfaceSeparation { get; init; } = 0.15f;
+
     /// <summary>Gets the extra drag coefficient of an empty cell (a crumpled bag of fabric).</summary>
     public float DeflatedDrag { get; init; } = 0.3f;
 }
@@ -119,6 +126,8 @@ public sealed class GliderSimulator
     private readonly float[] _stripFirmness, _nodeFirmness, _stripStiffening, _nodeStiffening;
     private readonly float _trimDynamicPressure;
     private readonly bool[] _tensionOnly;
+    private readonly SurfacePair[] _pairs;
+    private readonly List<int> _crossed = [];
     private readonly float[] _dragDiameter;
     private readonly int[] _lineConstraints;
     private readonly (string Name, int[] Constraints, float[] Travel, int[] Strips)[] _controls;
@@ -205,6 +214,7 @@ public sealed class GliderSimulator
         _liftSlope = (Polar(5).Lift - Polar(0).Lift) / (5 * Math.PI / 180);
         _stallAlpha = Enumerable.Range(0, 40).MaxBy(a => Polar(a).Lift);
         _strips = model.Strips.Select(BuildStrip).ToArray();
+        _pairs = BuildSurfacePairs(model);
         for (int s = 0; s < _strips.Length; s++) _strips[s].Index = s;
         _pressure = new float[_strips.Length];
 
@@ -314,6 +324,15 @@ public sealed class GliderSimulator
     /// <summary>Gets the angle of attack (degrees) of strip <paramref name="strip"/>'s inlet: of the nose, which differs when it is folded.</summary>
     public float StripInletAngle(int strip) => _strips[strip].InletAlpha;
 
+    /// <summary>
+    /// Gets how many chord stations had the upper skin below the lower one (across the local fabric) in the last substep,
+    /// before the separation corrected them.
+    /// </summary>
+    public int SurfaceCrossings { get; private set; }
+
+    /// <summary>Gets the upper skin nodes of the stations counted in <see cref="SurfaceCrossings"/>.</summary>
+    public IReadOnlyList<int> CrossedNodes => _crossed;
+
     /// <summary>Puts the glider back in its rest shape, flying at the trim airspeed along the trim glide path.</summary>
     public void Reset()
     {
@@ -352,6 +371,7 @@ public sealed class GliderSimulator
                 _positions[i] += _velocities[i] * h;
             }
             SolveConstraints(h);
+            SeparateSurfaces();
             float invH = 1 / h;
             float invMass = 0;
             var momentum = Vector3.Zero;
@@ -457,6 +477,89 @@ public sealed class GliderSimulator
             _nodeFirmness[i] = 0.5f * (_stripFirmness[_nodeStripA[i]] + _stripFirmness[_nodeStripB[i]]);
             _nodeStiffening[i] = 0.5f * (_stripStiffening[_nodeStripA[i]] + _stripStiffening[_nodeStripB[i]]);
         }
+    }
+
+    // An upper and a lower skin node at the same chord station of a section, and the nodes whose midpoints give the local
+    // frame of the fabric there: the chord direction (the stations before and after) and the span direction (the same
+    // station on the neighboring sections). The frame folds with the fabric, so a folded cell isn't mistaken for a
+    // crossing.
+    private readonly record struct SurfacePair(
+        int U, int L,
+        int ChordA0, int ChordA1, int ChordB0, int ChordB1,
+        int SpanA0, int SpanA1, int SpanB0, int SpanB1,
+        float Sign, float RestGap, float RestFrame);
+
+    private static SurfacePair[] BuildSurfacePairs(ProxyModel model)
+    {
+        var pairs = new List<SurfacePair>();
+        var rest = model.Nodes.Select(n => n.Position).ToArray();
+        var sections = model.Sections;
+        for (int s = 0; s < sections.Count; s++)
+        {
+            var section = sections[s];
+            if (section.Upper.Count == 0 || section.Upper.Count != section.Lower.Count) continue;
+            var before = sections[Math.Max(0, s - 1)];
+            var after = sections[Math.Min(sections.Count - 1, s + 1)];
+            if (before.Upper.Count != section.Upper.Count || after.Upper.Count != section.Upper.Count) continue;
+            int last = section.Upper.Count - 1;
+            for (int k = 0; k <= last; k++)
+            {
+                var pair = new SurfacePair(
+                    section.Upper[k], section.Lower[k],
+                    k > 0 ? section.Upper[k - 1] : section.LeadingEdge, k > 0 ? section.Lower[k - 1] : section.LeadingEdge,
+                    k < last ? section.Upper[k + 1] : section.TrailingEdge, k < last ? section.Lower[k + 1] : section.TrailingEdge,
+                    before.Upper[k], before.Lower[k], after.Upper[k], after.Lower[k],
+                    1, 0, 0);
+                var (up, frame) = FabricNormal(pair, rest);
+                float gap = frame > 0 ? Vector3.Dot(rest[pair.U] - rest[pair.L], up) : 0;
+                if (Math.Abs(gap) < 1e-4f) continue;
+                pairs.Add(pair with { Sign = Math.Sign(gap), RestGap = Math.Abs(gap), RestFrame = frame });
+            }
+        }
+        return [.. pairs];
+    }
+
+    // The unit normal of the fabric at a pair (span × chord between the neighbors' midpoints) and the length of the
+    // cross product (small when the fabric around it is crumpled and the frame is unreliable).
+    private static (Vector3 Up, float Frame) FabricNormal(in SurfacePair pair, ReadOnlySpan<Vector3> p)
+    {
+        var chord = (p[pair.ChordB0] + p[pair.ChordB1] - p[pair.ChordA0] - p[pair.ChordA1]) * 0.5f;
+        var span = (p[pair.SpanB0] + p[pair.SpanB1] - p[pair.SpanA0] - p[pair.SpanA1]) * 0.5f;
+        var up = Vector3.Cross(span, chord);
+        float frame = up.Length();
+        return frame > 1e-9f ? (up / frame, frame) : (Vector3.Zero, 0);
+    }
+
+    // Keeps the upper skin above the lower one at every chord station (a one-sided constraint along the fabric's normal,
+    // after the distance constraints): limp, empty cells would otherwise let a skin pass through the other, and the
+    // pressure on the inverted pocket would keep it there.
+    private void SeparateSurfaces()
+    {
+        float fraction = _settings.SurfaceSeparation;
+        int crossings = 0;
+        _crossed.Clear();
+        for (int i = 0; i < _pairs.Length; i++)
+        {
+            ref readonly var pair = ref _pairs[i];
+            var (up, frame) = FabricNormal(pair, _positions);
+            // Where the fabric around the station is crumpled, the frame says nothing about which side is up.
+            if (frame < 0.25f * pair.RestFrame) continue;
+            float gap = pair.Sign * Vector3.Dot(_positions[pair.U] - _positions[pair.L], up);
+            if (gap < 0)
+            {
+                crossings++;
+                _crossed.Add(pair.U);
+            }
+            float minimum = fraction * pair.RestGap;
+            if (gap >= minimum || fraction <= 0) continue;
+            float wu = _inverseMass[pair.U], wl = _inverseMass[pair.L];
+            float w = wu + wl;
+            if (w <= 0) continue;
+            var push = up * (pair.Sign * (minimum - gap) / w);
+            _positions[pair.U] += push * wu;
+            _positions[pair.L] -= push * wl;
+        }
+        SurfaceCrossings = crossings;
     }
 
     // One Gauss-Seidel pass in a fixed order (alternating the direction every substep makes stiff networks oscillate).

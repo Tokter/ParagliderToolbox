@@ -101,8 +101,16 @@ Per frame (e.g. 1/60 s), `substeps` times (16 for Medium; more for High):
    oscillate): `C = |a−b| − rest`; skip if `C < 0` and tension-only;
    `α = C < 0 ? compressionCompliance : compliance`, blended with `deflatedCompliance` by the fabric firmness (below);
    `α̃ = α / h²`; `λ = −C / (wₐ + w_b + α̃)`; `a += wₐ·λ·n`, `b −= w_b·λ·n` with `n = (a−b)/|a−b|`, `w = 1/m`.
-4. **Velocities**: `v = (x − x_prev)/h`; damp only the motion relative to the center of mass.
-5. Keep the glider near the origin (shift all positions, accumulate the offset in double precision): far from the
+4. **Keep the skins apart** (double-surface proxies): for every section and chord station, the upper node `U` must
+   stay above the lower node `L` across the local fabric. The fabric normal is `n̂ = span × chord` from midpoints
+   `(U+L)/2`: `chord` from the previous station (or the leading edge) to the next (or the trailing edge), `span` from
+   the same station on the neighboring sections (the section itself at the tips), signed so the rest pose is
+   positive. Skip the station when `|span × chord|` is below a quarter of its rest value (crumpled fabric: no reliable
+   frame). If `g = (U − L)·n̂` is below 15% of its rest value, move `U` and `L` apart along `n̂` by the difference,
+   weighted by `1/m`. Without this, limp empty cells let one skin pass through the other, and the pressure on the
+   inverted pocket holds it there.
+5. **Velocities**: `v = (x − x_prev)/h`; damp only the motion relative to the center of mass.
+6. Keep the glider near the origin (shift all positions, accumulate the offset in double precision): far from the
    origin floats lose the precision the stiff constraints need and the solver gains energy.
 
 Start each flight with every node moving at `trimAirspeed` along a path `trimFlightPathAngle` below the horizon.

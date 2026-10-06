@@ -83,7 +83,9 @@ simulation algorithm for game developers; keep it in sync with the simulator.
   (lift does no work), lifting-line induced angle by fixed-point iteration, flap lift for brakes, ram-air pressure cells
   whose inlets see the nose's own angle of attack and close when it flattens, and **fabric firmness**: canopy
   constraints blend from stiff (inflated) to limp (`DeflatedCompliance`) by their cells' pressure, so the wing folds
-  like fabric in collapses, big ears and stalls. Tunables in `SimulatorSettings` (`StalledInletPressure`,
+  like fabric in collapses, big ears and stalls; a one-sided pass after the constraints keeps the upper skin above the
+  lower one at every station (`SurfaceSeparation`; limp cells would otherwise invert and the pressure would hold them
+  inverted). Tunables in `SimulatorSettings` (`StalledInletPressure`,
   `FirmnessAirspeedExponent`, `DeflatedDrag`, `EnclosedAir` — off: it destabilizes the High proxy at 16 substeps).
   Tests in `SimulationTests` pin the flight envelope and the shapes (trim, brakes and handles, slack brake lines, speed
   bar, collapse, big ears, frontal span fold, full stall and recovery); rerun them after any physics change.

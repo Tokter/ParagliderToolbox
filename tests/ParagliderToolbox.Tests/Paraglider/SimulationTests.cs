@@ -244,4 +244,32 @@ public class SimulationTests
         Assert.InRange(airspeed * 3.6f, 25, 50);
         Assert.InRange(sink, 0.5f, 3f);
     }
+
+    [Theory]
+    [InlineData(ProxyComplexity.Medium)]
+    [InlineData(ProxyComplexity.High)]
+    public void UpperAndLowerSkin_DontGetStuckThroughEachOther(ProxyComplexity complexity)
+    {
+        // A turn and its exit used to flip the tip section (upper skin under the lower one), and the pressure on the
+        // inverted cell kept it there.
+        var sim = Simulator(complexity);
+        Average(sim, 10);
+        int frames = 0, crossed = 0;
+        void Fly(float seconds)
+        {
+            for (int i = 0; i < seconds * 60; i++)
+            {
+                sim.Step(1 / 60f);
+                frames++;
+                if (sim.SurfaceCrossings > 0) crossed++;
+            }
+        }
+        Ramp(sim, b => sim.Inputs.BrakeLeft = 0.5f * b);
+        Fly(12);
+        sim.Inputs.BrakeLeft = 0;
+        Fly(8);
+
+        Assert.Equal(0, sim.SurfaceCrossings);
+        Assert.True(crossed < frames / 50, $"crossed in {crossed} of {frames} frames");
+    }
 }
