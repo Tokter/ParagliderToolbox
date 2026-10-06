@@ -2,6 +2,10 @@
 
 Tools for paraglider simulation and games, built with the [Atelier](https://github.com/Tokter/Atelier) UI framework.
 
+![A generated paraglider rendered in Blender Cycles](docs/images/render-blue-side.jpg)
+
+![The paraglider editor: project tree, 3D preview and design parameters](docs/images/ui-editor.png)
+
 ## The application shell
 
 - **Project tree** (left): every object in the project. Right-click for Add, Rename, Duplicate, Delete and Move.
@@ -54,6 +58,10 @@ as you edit (a few hundred milliseconds) and can fly it.
 - **Simulation** in the detail view (P): trim glide, brakes, speed bar, weight shift, asymmetric and frontal collapses,
   big ears, gusts, stalls and spins, with the high resolution model following the proxy. Record a flight (Ctrl+R) and
   export it as an animation.
+
+  | Simulation: an asymmetric collapse | The physics proxy the high resolution model is skinned to |
+  |---|---|
+  | ![Simulation of an asymmetric collapse](docs/images/ui-simulation.png) | ![The physics proxy](docs/images/ui-proxy.png) |
 - **Polar recorder** (Polar button, Ctrl+P): flies the proxy headless and deterministically through the speed range
   (trim, speed bar 25–100 %, then symmetric brakes in 10 % steps until it stalls), settling and then measuring each
   setting, and plots the samples live. The result is stored as a polar under the paraglider (with the design it was
@@ -61,6 +69,8 @@ as you edit (a few hundred milliseconds) and can fly it.
   origin to the fitted curve), min sink, min speed, max sink and the stall labeled, plus a table of every setting.
   Export it as CSV. `PolarRecorder` is UI-free, the building block for an optimizer that tweaks parameters and
   compares polars.
+
+  ![A recorded polar with its key figures labeled](docs/images/ui-polar.png)
 - **Exports** (File > Export paraglider, Ctrl+E, or the Tools menu): glTF binary with the skinned model, materials and
   textures (Blender, Godot), the proxy alone as glTF, the proxy JSON for a game ([format and algorithm](docs/ProxyFormat.md)),
   OBJ + MTL + PNG, and a line plan CSV.
@@ -75,6 +85,17 @@ as you edit (a few hundred milliseconds) and can fly it.
 | Ctrl+R | Record the simulation |
 | Ctrl+P | Record the polar (again to cancel) |
 | Game controller (Xbox) | Left and right trigger: brakes; left stick: weight shift (left/right) and speed bar (forward); A: simulate or pause; left and right bumper: collapse left and right |
+
+### Renders
+
+Exported glTF models rendered in Blender 4.4 with Cycles (sky, procedural terrain and lighting added in Blender;
+the canopy, ribs, rigging, textures and normal maps come straight from the export). `docs/images/render.py` renders
+them again: `blender -b --python docs/images/render.py -- model.glb out hero,side,backlit,nose 256 1`.
+
+| | |
+|---|---|
+| ![Front three-quarter view](docs/images/render-blue-hero.jpg) | ![Stripes pattern in evening light](docs/images/render-sunset-evening.jpg) |
+| ![Backlit from behind, seen from below](docs/images/render-blue-backlit.jpg) | ![Leading edge: inlets, shark nose and ballooned cells](docs/images/render-blue-nose.jpg) |
 
 ## Building
 
