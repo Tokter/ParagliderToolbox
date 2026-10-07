@@ -70,10 +70,16 @@ Adding a paraglider asks for a starting point:
   shift, asymmetric and frontal collapses, big ears, gusts, stalls and spins, with the high resolution model following
   the proxy. The canopy is fabric held in shape by its pressure: empty cells go limp, so collapses fold the canopy under,
   big ears fold the tips, a frontal folds the span into a horseshoe and a full stall crumples it; it reopens as the cells
-  refill. Record a flight (Ctrl+R) and export it as an animation. The **Forces** view (5) draws the lift, canopy drag,
-  line drag and pilot drag as arrows from where the simulation applies them, as long as they are strong: per node, or
-  summed per strip at its center of pressure; with the totals and the force balance's L/D. It also shows the load the
-  pilot hangs in the harness with (weight and inertia: down, and out of a turn), and the telemetry shows the G load.
+  refill. The **Forces** view (5) draws the lift, canopy drag, line drag and pilot drag as arrows from where the
+  simulation applies them, as long as they are strong: per node, or summed per strip at its center of pressure; with
+  the totals and the force balance's L/D. It also shows the load the pilot hangs in the harness with (weight and
+  inertia: down, and out of a turn), and the telemetry shows the G load.
+- **Recorded flights** (Record, Ctrl+R): stopping a recording adds it under the paraglider, like a polar. Select it to
+  replay it: play, pause, scrub the timeline, step frame by frame, slow it down to a tenth, and orbit and zoom around the
+  glider meanwhile, with the flight data of every moment (airspeed, vario, G, angle of attack, deflated cells, the
+  pilot's inputs). It keeps the design it was flown with (the paraglider can be edited on), the proxy's motion (30 frames
+  a second, about 2.5 MB a minute in the project for a Medium proxy) and the pilot's inputs from the start of the flight,
+  so the simulator can fly it again exactly: save the project to share something strange. Export it as a glTF animation.
 
   | Simulation: an asymmetric collapse | The physics proxy the high resolution model is skinned to |
   |---|---|
@@ -102,9 +108,10 @@ Adding a paraglider asks for a starting point:
 | 5, 6, D, - and = | Show the aerodynamic forces; per node or per strip; drag ×5; shorter and longer arrows |
 | P / R | Simulate or pause / reset |
 | Q, E, F, B, G | Collapse left, right, frontal, big ears, gust |
-| Ctrl+R | Record the simulation |
+| Ctrl+R | Record the flight (again to stop: it is added under the paraglider) |
 | Ctrl+P | Record the polar (again to cancel) |
 | Game controller (Xbox) | Left and right trigger: brakes; left stick: weight shift (left/right) and speed bar (forward); A: simulate or pause; left and right bumper: collapse left and right |
+| In a recorded flight: P / R, comma and period, - and = | Play or pause / restart, step a frame back and on, slower and faster |
 
 ### Renders
 

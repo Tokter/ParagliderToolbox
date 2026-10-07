@@ -100,9 +100,8 @@ public sealed class ParagliderDetailView : KeybindingHandler
                 .Content(new StackPanel().Orientation(Orientation.Horizontal).Spacing(6).Children(
                     new Icon().Kind(MaterialIconKind.FiberManualRecord).Size(16).VerticalAlignment(VerticalAlignment.Center),
                     new TextBlock("Record").VerticalAlignment(VerticalAlignment.Center)))
-                .ToolTip("Record the simulation for the animation export (Ctrl+R)")
+                .ToolTip("Record the flight (Ctrl+R); stopping adds it to the paraglider, to replay, inspect and export it")
                 .BindIsChecked(_preview, p => p.IsRecording, (p, v) => { if (v != p.IsRecording) p.ToggleRecordingCommand.Execute(null); }),
-            Action(_preview.ExportRecordingCommand),
             new Border().Width(12),
             new Button()
                 .Variant(ButtonVariant.Tonal)

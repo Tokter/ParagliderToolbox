@@ -137,13 +137,24 @@ simulation algorithm for game developers; keep it in sync with the simulator.
   settings, every sample and the points; `PolarCsv` writes them. Tests in `PolarRecorderTests`. In the module,
   `PolarRecorderOptions` is the editable form of the settings (step counts, times) shown by
   `ParagliderActions.AskPolarSettingsAsync` through `IShellDialogs.EditPropertiesAsync` (a property grid in a dialog).
-- **Module**: `ParagliderNode` (a `ContainerNode` holding its `PolarNode`s; the parameters as [Inspectable] properties forwarding to a `GliderDesign`; colors saved as
+- **Recorded flights** (`Simulation/FlightRecording`): `FlightRecorder` logs a simulated flight (call `BeforeStep`/
+  `AfterStep` around every `GliderSimulator.Step`): the inputs of every step from the start (as changes), and while
+  recording frames every second step (the proxy's node positions relative to where the recording started, 1 mm int16
+  offsets from the pilot, each the difference to the frame before, deflated, base64; plus `FlightTelemetry`).
+  `FlightRecording` keeps the design, the inputs and the frames; `Decode()` gives the frames. To examine a shared one:
+  load the project file, take the `RecordingNode`'s recording, generate its design's proxy, and fly a new simulator with
+  `InputsAt(step)` for every step: it reproduces the frames (deterministic; `FlightRecordingTests`).
+- **Module**: `ParagliderNode` (a `ContainerNode` holding its `PolarNode`s and `RecordingNode`s; the parameters as [Inspectable] properties forwarding to a `GliderDesign`; colors saved as
   hex; `Snapshot()` for the generator thread; `MeshDetail` writes its settings into the explicit mesh properties, and
   editing one of those switches to Custom; `MeshDetail` is saved after them, `[JsonPropertyOrder(1)]`, so loading
   doesn't switch), `NewParagliderOptions`/`NewParagliderView` (the new-paraglider dialog: class cards, detail segments,
   triangle counts measured in the background; `ParagliderModule.AskNewParagliderAsync`), `ParagliderPreview` (debounced background generation, Scene3D, simulation
   loop driven by `Viewport3D.Rendered`; the Forces view draws `GliderSimulator.RecordForces`' per-node and per-strip
-  lift and drag as one vertex-colored line mesh), `ParagliderDetailView`, `ParagliderActions` (global export commands),
+  lift and drag as one vertex-colored line mesh; Record adds a `RecordingNode` when stopped, without selecting it),
+  `GliderScene` (the model's parts and materials skinned to the proxy, the proxy meshes, the part toggles; shared by the
+  preview and the replay), `RecordingPlayer`/`RecordingDetailView` (the replay: generates the recorded design, plays the
+  decoded frames with play/pause, timeline, frame steps, speed; the animation export), `ParagliderDetailView`,
+  `ParagliderActions` (global export commands; `AddPolar`, `AddRecording`, `ExportRecordingAsync`),
   `CurveEditor`/`CurvePropertyEditor`, `PolarDetailView` and `PolarChart` (plots a polar on Atelier.Charts' `XYChart`; also used live while recording). The 3D view is Atelier's `Atelier.Graphics3D.Viewport3D` (OpenGL on the window's
   context, composited into Skia).
 

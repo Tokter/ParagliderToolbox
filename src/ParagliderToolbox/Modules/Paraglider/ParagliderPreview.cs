@@ -36,12 +36,7 @@ public sealed partial class ParagliderPreview : ObservableObject, IDisposable
 
     private readonly ParagliderNode _node;
     private readonly Func<Modules.Paraglider.ParagliderActions> _actions;
-    private readonly Dictionary<GliderMaterial, Material3D> _materials = [];
-    private readonly List<(MeshPart Part, Mesh3D Mesh, MeshInstance3D Instance, SkinWeights[] Weights)> _parts = [];
-    private readonly Mesh3D _proxyLines = new(PrimitiveTopology.Lines);
-    private readonly Mesh3D _proxyPoints = new(PrimitiveTopology.Points);
-    private readonly MeshInstance3D _proxyLinesInstance;
-    private readonly MeshInstance3D _proxyPointsInstance;
+    private readonly GliderScene _scene = new();
     private readonly Mesh3D _forceLines = new(PrimitiveTopology.Lines);
     private readonly MeshInstance3D _forceLinesInstance;
     private Vector3[] _forcePositions = [];
@@ -52,10 +47,7 @@ public sealed partial class ParagliderPreview : ObservableObject, IDisposable
     private bool _disposed;
 
     private GliderSimulator? _simulator;
-    private ProxyDeformer? _deformer;
-    private Matrix4x4[] _skin = [];
-    private Vector3[] _positionBuffer = [];
-    private Vector3[] _normalBuffer = [];
+    private FlightRecorder? _recorder;
     private Vector3[] _previousDisplay = [];
     private Vector3[] _currentDisplay = [];
     private Vector3[] _shown = [];
@@ -65,10 +57,6 @@ public sealed partial class ParagliderPreview : ObservableObject, IDisposable
     private double _lastFrame;
     private float _pending;
     private readonly Dictionary<string, (float Start, float Until)> _releaseAt = [];
-    private (double X, double Y, double Z) _recordOrigin;
-    private readonly List<float> _recordTimes = [];
-    private readonly List<Vector3[]> _recordFrames = [];
-    private float _nextRecordTime;
 
     [ObservableProperty] private GliderModel? _model;
     [ObservableProperty] private string _status = "Generating…";
@@ -95,12 +83,8 @@ public sealed partial class ParagliderPreview : ObservableObject, IDisposable
     {
         _node = node;
         _actions = actions;
-        _proxyLinesInstance = new MeshInstance3D(_proxyLines, new Material3D { BaseColor = Color.FromRgb(255, 196, 0), Unlit = true }) { Name = "Proxy", DrawOnTop = true, IsVisible = false };
-        _proxyPointsInstance = new MeshInstance3D(_proxyPoints, new Material3D { BaseColor = Color.FromRgb(255, 112, 67), Unlit = true, PointSize = 5 }) { Name = "Proxy nodes", DrawOnTop = true, IsVisible = false };
         _forceLinesInstance = new MeshInstance3D(_forceLines, new Material3D { BaseColor = Color.FromRgb(255, 255, 255), Unlit = true }) { Name = "Forces", DrawOnTop = true, IsVisible = false };
-        Scene.Instances.Add(_proxyLinesInstance);
-        Scene.Instances.Add(_proxyPointsInstance);
-        Scene.Instances.Add(_forceLinesInstance);
+        _scene.AddOverlay(_forceLinesInstance);
         _node.PropertyChanged += OnNodePropertyChanged;
         Regenerate();
     }
@@ -109,7 +93,7 @@ public sealed partial class ParagliderPreview : ObservableObject, IDisposable
     public ParagliderNode Node => _node;
 
     /// <summary>Gets the scene the viewport shows.</summary>
-    public Scene3D Scene { get; } = new();
+    public Scene3D Scene => _scene.Scene;
 
     /// <summary>Occurs when the scene changed shape (a new model): the view frames it the first time.</summary>
     public event EventHandler? ModelApplied;
@@ -167,108 +151,13 @@ public sealed partial class ParagliderPreview : ObservableObject, IDisposable
         bool first = Model is null;
         StopSimulation();
         Model = model;
-        UpdateMaterials(model);
-
-        // Reuse the parts' meshes and instances when the part list is the same.
-        while (_parts.Count > model.Parts.Count)
-        {
-            Scene.Instances.Remove(_parts[^1].Instance);
-            _parts.RemoveAt(_parts.Count - 1);
-        }
-        for (int p = 0; p < model.Parts.Count; p++)
-        {
-            var part = model.Parts[p];
-            var colors = part.Colors.Count == part.VertexCount ? part.Colors.ToArray() : null;
-            if (p < _parts.Count)
-            {
-                var existing = _parts[p];
-                existing.Mesh.SetGeometry(part.Positions.ToArray(), part.Indices.ToArray(), part.Normals.ToArray(), part.TexCoords.ToArray(), colors);
-                existing.Instance.Material = _materials[part.Material];
-                existing.Instance.Name = part.Name;
-                _parts[p] = (part, existing.Mesh, existing.Instance, model.Skin[p]);
-            }
-            else
-            {
-                var mesh = new Mesh3D();
-                mesh.SetGeometry(part.Positions.ToArray(), part.Indices.ToArray(), part.Normals.ToArray(), part.TexCoords.ToArray(), colors);
-                var instance = new MeshInstance3D(mesh, _materials[part.Material]) { Name = part.Name };
-                Scene.Instances.Insert(Scene.Instances.IndexOf(_proxyLinesInstance), instance);
-                _parts.Add((part, mesh, instance, model.Skin[p]));
-            }
-        }
-        BuildProxyMeshes(model.Proxy.Model, model.Proxy.Model.Nodes.Select(n => n.Position).ToArray(), rebuild: true);
+        _scene.Show(model);
         UpdateVisibility();
 
         var proxy = model.Proxy.Model;
         Status = $"{model.TriangleCount / 1000.0:0.#}k triangles · {model.Shape.CellCount} cells · proxy: {proxy.Nodes.Count} nodes, " +
                  $"{proxy.Constraints.Count} constraints ({model.Design.ProxyComplexity}) · generated in {model.Elapsed.TotalMilliseconds:0} ms";
         if (first) ModelApplied?.Invoke(this, EventArgs.Empty);
-    }
-
-    private void UpdateMaterials(GliderModel model)
-    {
-        var design = model.Design;
-        Material3D Get(GliderMaterial key) => _materials.TryGetValue(key, out var m) ? m : _materials[key] = new Material3D();
-
-        var canopy = Get(GliderMaterial.Canopy);
-        canopy.BaseColor = Color.FromRgb(255, 255, 255);
-        canopy.Roughness = 0.72f;
-        canopy.Transmission = (float)design.FabricTranslucency;
-        canopy.DoubleSided = true;
-        canopy.BaseColorTexture = model.BaseColor is { } baseColor ? new Texture3D(baseColor.Width, baseColor.Height, baseColor.Pixels) : null;
-        canopy.NormalTexture = model.NormalMap is { } normal ? new Texture3D(normal.Width, normal.Height, normal.Pixels, srgb: false) : null;
-
-        var ribs = Get(GliderMaterial.Ribs);
-        ribs.BaseColor = ToColor(design.RibColor);
-        ribs.Roughness = 0.8f;
-        ribs.Transmission = (float)design.FabricTranslucency;
-
-        var lines = Get(GliderMaterial.Lines);
-        lines.BaseColor = Color.FromRgb(255, 255, 255);
-        lines.Roughness = 0.6f;
-        lines.DoubleSided = true; // low poly lines are flat ribbons
-
-        var risers = Get(GliderMaterial.Risers);
-        risers.BaseColor = Color.FromRgb(0x26, 0x32, 0x38);
-        risers.Roughness = 0.9f;
-
-        var metal = Get(GliderMaterial.Metal);
-        metal.BaseColor = Color.FromRgb(210, 210, 215);
-        metal.Metallic = 1;
-        metal.Roughness = 0.3f;
-
-        var toggles = Get(GliderMaterial.Toggles);
-        toggles.BaseColor = ToColor(design.AccentColor);
-        toggles.Roughness = 0.55f;
-    }
-
-    private static Color ToColor(string hex)
-    {
-        var c = CanopyTextureGenerator.ParseColor(hex, SKColors.Gray);
-        return Color.FromRgb(c.Red, c.Green, c.Blue);
-    }
-
-    private void BuildProxyMeshes(ProxyModel proxy, Vector3[] positions, bool rebuild)
-    {
-        if (rebuild)
-        {
-            var indices = new List<uint>();
-            foreach (var c in proxy.Constraints)
-            {
-                if (c.Kind is ConstraintKind.Chordwise or ConstraintKind.Spanwise or ConstraintKind.Rib or ConstraintKind.Line or ConstraintKind.Riser or ConstraintKind.Harness)
-                {
-                    indices.Add((uint)c.A);
-                    indices.Add((uint)c.B);
-                }
-            }
-            _proxyLines.SetGeometry(positions, indices.ToArray());
-            _proxyPoints.SetGeometry(positions, Enumerable.Range(0, positions.Length).Select(i => (uint)i).ToArray());
-        }
-        else
-        {
-            _proxyLines.UpdatePositions(positions);
-            _proxyPoints.UpdatePositions(positions);
-        }
     }
 
     partial void OnShowCanopyChanged(bool value) => UpdateVisibility();
@@ -278,17 +167,10 @@ public sealed partial class ParagliderPreview : ObservableObject, IDisposable
 
     private void UpdateVisibility()
     {
-        foreach (var (part, _, instance, _) in _parts)
-        {
-            instance.IsVisible = part.Material switch
-            {
-                GliderMaterial.Canopy => ShowCanopy,
-                GliderMaterial.Ribs => ShowRibs && ShowCanopy,
-                _ => ShowRigging,
-            };
-        }
-        _proxyLinesInstance.IsVisible = ShowProxy;
-        _proxyPointsInstance.IsVisible = ShowProxy;
+        _scene.ShowCanopy = ShowCanopy;
+        _scene.ShowRibs = ShowRibs;
+        _scene.ShowRigging = ShowRigging;
+        _scene.ShowProxy = ShowProxy;
         _forceLinesInstance.IsVisible = ShowForces && _simulator != null && _forceLayoutPerStrip != null;
     }
 
@@ -373,32 +255,28 @@ public sealed partial class ParagliderPreview : ObservableObject, IDisposable
     private void Gust() => Pulse("Gust", 2f);
 
     [RelayCommand]
-    [property: Command("Record", Group, Label = "Record", Icon = MaterialIcons.FiberManualRecord, Description = "Record the simulation, to export it as an animation", DefaultKeybinding = "Ctrl+R")]
+    [property: Command("Record", Group, Label = "Record", Icon = MaterialIcons.FiberManualRecord,
+        Description = "Record the flight; stopping adds it to the paraglider, to replay, inspect and export it", DefaultKeybinding = "Ctrl+R")]
     private void ToggleRecording()
     {
-        IsRecording = !IsRecording;
         if (IsRecording)
         {
-            _recordTimes.Clear();
-            _recordFrames.Clear();
-            _nextRecordTime = 0;
-            _recordOrigin = _simulator?.Origin ?? default;
-            if (!IsSimulating) StartSimulation();
+            SaveRecording();
+            return;
         }
-        ExportRecordingCommand.NotifyCanExecuteChanged();
+        if (!IsSimulating) StartSimulation();
+        if (_recorder is null) return;
+        _recorder.Start();
+        IsRecording = true;
     }
 
-    private bool CanExportRecording() => !IsRecording && _recordFrames.Count > 1 && Model != null;
-
-    [RelayCommand(CanExecute = nameof(CanExportRecording))]
-    [property: Command("ExportRecording", Group, Label = "Export recording…", Icon = MaterialIcons.Movie,
-        Description = "Export the high resolution glider with the recorded flight baked into its proxy joints (glTF)")]
-    private async Task ExportRecordingAsync()
+    // Adds what was recorded to the paraglider (a moment is too short to keep).
+    private void SaveRecording()
     {
-        if (Model is not { } model) return;
-        float start = _recordTimes[0];
-        var animation = new ProxyAnimation("Simulation", _recordTimes.Select(t => t - start).ToArray(), _recordFrames.ToArray());
-        await _actions().ExportAnimationAsync(_node, model, animation);
+        IsRecording = false;
+        if (_recorder is not { IsRecording: true } recorder) return;
+        var recording = recorder.Stop();
+        if (recording.FrameCount > 1) _actions().AddRecording(_node, recording);
     }
 
     [ObservableProperty] private bool _isRecordingPolar;
@@ -485,12 +363,9 @@ public sealed partial class ParagliderPreview : ObservableObject, IDisposable
         {
             // Recording the forces costs next to nothing, and they can be shown while paused.
             _simulator = new GliderSimulator(model.Proxy.Model) { RecordForces = true };
+            // Logs the inputs from the first step, so a recording started later can be flown again exactly.
+            _recorder = new FlightRecorder(_simulator, model.Design, StepTime);
             _forceLayoutPerStrip = null;
-            _deformer = new ProxyDeformer(model.Proxy.Model, model.SkinAttachments);
-            _skin = new Matrix4x4[_deformer.JointCount];
-            int largest = model.Parts.Max(p => p.VertexCount);
-            _positionBuffer = new Vector3[largest];
-            _normalBuffer = new Vector3[largest];
             int nodes = model.Proxy.Model.Nodes.Count;
             _displayOrigin = _simulator.Origin;
             _previousDisplay = new Vector3[nodes];
@@ -517,18 +392,17 @@ public sealed partial class ParagliderPreview : ObservableObject, IDisposable
     public void StopSimulation()
     {
         IsSimulating = false;
-        IsRecording = false;
+        // A recording ends with its flight (a reset, or a new design), and is kept.
+        if (IsRecording) SaveRecording();
         ToggleSimulationCommandLabel = "Simulate";
         if (_simulator is null) return;
         _simulator = null;
-        _deformer = null;
+        _recorder = null;
         _releaseAt.Clear();
         Telemetry = string.Empty;
         ForceLegend = string.Empty;
         UpdateVisibility();
-        // Back to the rest pose.
-        foreach (var (part, mesh, _, _) in _parts) mesh.UpdatePositions(part.Positions.ToArray(), part.Normals.ToArray());
-        if (Model is { } model) BuildProxyMeshes(model.Proxy.Model, model.Proxy.Model.Nodes.Select(n => n.Position).ToArray(), rebuild: false);
+        _scene.ShowRest();
         SimulationStopped?.Invoke(this, EventArgs.Empty);
     }
 
@@ -538,7 +412,7 @@ public sealed partial class ParagliderPreview : ObservableObject, IDisposable
     /// <returns>Whether another frame is needed.</returns>
     public bool Advance()
     {
-        if (!IsSimulating || _simulator is not { } sim || _deformer is not { } deformer || Model is not { } model) return false;
+        if (!IsSimulating || _simulator is not { } sim || Model is null) return false;
         double now = _clock.Elapsed.TotalSeconds;
         _pending += (float)Math.Min(0.1, now - _lastFrame);
         _lastFrame = now;
@@ -562,11 +436,12 @@ public sealed partial class ParagliderPreview : ObservableObject, IDisposable
             inputs.BigEars = Active("BigEars", t);
             inputs.Wind = Active("Gust", t) > 0 ? new Vector3(0, 4, 0) : Vector3.Zero;
             (_previousDisplay, _currentDisplay) = (_currentDisplay, _previousDisplay);
+            _recorder?.BeforeStep();
             sim.Step(StepTime);
+            _recorder?.AfterStep();
             CaptureDisplay(sim, _currentDisplay);
             _pending -= StepTime;
             steps++;
-            if (IsRecording && sim.Time >= _nextRecordTime) Record(sim);
         }
         // Too slow to keep up: drop the time rather than fall further behind.
         if (_pending > StepTime) _pending = StepTime;
@@ -575,15 +450,7 @@ public sealed partial class ParagliderPreview : ObservableObject, IDisposable
         float alpha = Math.Clamp(_pending / StepTime, 0, 1);
         for (int i = 0; i < _shown.Length; i++) _shown[i] = Vector3.Lerp(_previousDisplay[i], _currentDisplay[i], alpha);
 
-        deformer.ComputeSkinMatrices(_shown, _skin);
-        foreach (var (part, mesh, instance, weights) in _parts)
-        {
-            if (!instance.IsVisible) continue;
-            int count = part.VertexCount;
-            ProxyDeformer.Deform(part.Positions, part.Normals, weights, _skin, _positionBuffer, _normalBuffer);
-            mesh.UpdatePositions(_positionBuffer.AsSpan(0, count), _normalBuffer.AsSpan(0, count));
-        }
-        if (ShowProxy) BuildProxyMeshes(model.Proxy.Model, _shown, rebuild: false);
+        _scene.Pose(_shown);
         if (ShowForces) UpdateForces();
 
         var v = sim.PilotVelocity;
@@ -592,13 +459,11 @@ public sealed partial class ParagliderPreview : ObservableObject, IDisposable
         int deflated = 0;
         foreach (float p in pressure) if (p < 0.4f) deflated++;
         Telemetry = $"{sim.Time,5:0.0} s   airspeed {sim.Airspeed * 3.6f:0} km/h   vario {v.Y:+0.0;-0.0} m/s   glide {(v.Y < -0.05f ? horizontal / -v.Y : 99):0.0}   " +
-                    $"G {sim.LoadFactor:0.0}   AoA {sim.CenterAngleOfAttack:0}°   deflated cells {deflated}/{pressure.Length}{(IsRecording ? $"   ● REC {_recordFrames.Count / 30.0:0.0} s" : "")}" +
+                    $"G {sim.LoadFactor:0.0}   AoA {sim.CenterAngleOfAttack:0}°   deflated cells {deflated}/{pressure.Length}{(IsRecording && _recorder is { } recorder ? $"   ● REC {recorder.RecordedSeconds:0.0} s" : "")}" +
                     (_gamepad.GamepadName is { } padName ? $"   gamepad: {padName}" : "");
 
         // The camera follows the point between the pilot and the canopy.
-        var pilot = _shown[model.Proxy.Model.Pilot];
-        var canopyCenter = _shown[model.Proxy.Model.Sections[model.Proxy.Model.Sections.Count / 2].LeadingEdge];
-        Simulated?.Invoke(this, Vector3.Lerp(pilot, canopyCenter, 0.6f));
+        Simulated?.Invoke(this, _scene.FollowPoint(_shown));
         return true;
     }
 
@@ -632,17 +497,6 @@ public sealed partial class ParagliderPreview : ObservableObject, IDisposable
     // The pilot pulls lines in over a third of a second (a step would yank the canopy around), and lets go at once.
     private float Active(string input, float time) =>
         _releaseAt.TryGetValue(input, out var pulse) && time < pulse.Until ? Math.Clamp((time - pulse.Start) / 0.3f + 0.05f, 0, 1) : 0;
-
-    private void Record(GliderSimulator sim)
-    {
-        // World positions relative to where the recording started, so the glider flies through the scene.
-        var offset = new Vector3((float)(sim.Origin.X - _recordOrigin.X), (float)(sim.Origin.Y - _recordOrigin.Y), (float)(sim.Origin.Z - _recordOrigin.Z));
-        var frame = sim.Positions.ToArray();
-        for (int i = 0; i < frame.Length; i++) frame[i] += offset;
-        _recordFrames.Add(frame);
-        _recordTimes.Add(sim.Time);
-        _nextRecordTime = sim.Time + 1 / 30f;
-    }
 
     #endregion
 

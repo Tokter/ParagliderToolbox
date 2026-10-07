@@ -17,6 +17,7 @@ public sealed class ParagliderModule : IToolboxModule
     // One preview per paraglider, kept while the paraglider lives, so switching the selection or an area's editor back
     // finds the generated model (and a paused simulation) as it was.
     private readonly ConditionalWeakTable<ParagliderNode, ParagliderPreview> _previews = new();
+    private readonly ConditionalWeakTable<RecordingNode, RecordingPlayer> _players = new();
     private ParagliderActions? _actions;
 
     /// <inheritdoc/>
@@ -35,6 +36,7 @@ public sealed class ParagliderModule : IToolboxModule
         toolbox.DetailViews.Register<ParagliderNode>(node =>
             new ParagliderDetailView(_previews.GetValue(node, n => new ParagliderPreview(n, () => _actions!))));
         toolbox.DetailViews.Register<PolarNode>(polar => new PolarDetailView(polar, actions));
+        toolbox.DetailViews.Register<RecordingNode>(flight => new RecordingDetailView(_players.GetValue(flight, n => new RecordingPlayer(n)), actions));
 
         toolbox.PropertyEditors.Add(registry => registry.Register<Curve>(CurvePropertyEditor.Create));
         toolbox.PropertyCategoryOrder.AddRange(ParagliderNode.CategoryOrder);
@@ -42,6 +44,8 @@ public sealed class ParagliderModule : IToolboxModule
         toolbox.PropertyCategoryOrder.AddRange(PolarRecorderOptions.CategoryOrder);
         toolbox.NodeTypes.Register<PolarNode>("polar", "Polar", MaterialIconKind.ShowChart, isCreatable: false,
             description: "A recorded polar curve of a paraglider");
+        toolbox.NodeTypes.Register<RecordingNode>("recording", "Recording", MaterialIconKind.Movie, isCreatable: false,
+            description: "A recorded flight of a paraglider, to replay, inspect and export");
 
         toolbox.Menus
             .Add(MenuRegistry.File, () => new MenuItem { DataContext = actions }.Command(actions.ExportAllCommand))

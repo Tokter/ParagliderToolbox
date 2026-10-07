@@ -41,12 +41,16 @@ public partial class ParagliderNode : ContainerNode
     }
 
     /// <inheritdoc/>
-    /// <remarks>A paraglider holds its recorded polars.</remarks>
-    public override bool CanContain(Type childType) => childType == typeof(PolarNode);
+    /// <remarks>A paraglider holds its recorded polars and flights.</remarks>
+    public override bool CanContain(Type childType) => childType == typeof(PolarNode) || childType == typeof(RecordingNode);
 
     /// <summary>Gets the recorded polars, oldest first.</summary>
     [InspectableIgnore]
     public IEnumerable<PolarNode> Polars => Children.OfType<PolarNode>();
+
+    /// <summary>Gets the recorded flights, oldest first.</summary>
+    [InspectableIgnore]
+    public IEnumerable<RecordingNode> Recordings => Children.OfType<RecordingNode>();
 
     /// <summary>Gets a number that changes whenever a design parameter changes.</summary>
     [InspectableIgnore]

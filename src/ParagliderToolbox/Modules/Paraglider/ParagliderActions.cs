@@ -152,21 +152,36 @@ public sealed partial class ParagliderActions : ObservableObject
         }
     }
 
-    /// <summary>Exports <paramref name="node"/> with a recorded flight baked into the proxy joints.</summary>
-    public async Task ExportAnimationAsync(ParagliderNode node, GliderModel previewModel, ProxyAnimation animation)
+    /// <summary>Exports a recorded flight: its paraglider (as flown) with the motion baked into the proxy joints (glTF).</summary>
+    public async Task ExportRecordingAsync(RecordingNode node)
     {
+        var recording = node.Recording;
+        if (recording.Design is not { } design || recording.FrameCount < 2) return;
         string? path = await _toolbox.Dialogs.PickSaveFileAsync("Export animation", "glTF binary (*.glb)|*.glb",
-            BaseName(node) + "_flight.glb", _lastFolder ?? ProjectFolder());
+            BaseName(node.Parent?.Name ?? "paraglider") + "_" + BaseName(node.Name) + ".glb", _lastFolder ?? ProjectFolder());
         if (path is null) return;
         _lastFolder = Path.GetDirectoryName(path);
-        int nodes = previewModel.Proxy.Model.Nodes.Count;
-        await RunExportAsync(node, model =>
+        await RunExportAsync(design, model =>
         {
-            // The animation drives the joints by node index: the full quality model must have the same proxy.
-            if (model.Proxy.Model.Nodes.Count != nodes) throw new InvalidOperationException("The design changed since the recording; record again.");
-            File.WriteAllBytes(path, GliderExporter.ToGlb(model, new GlbOptions { Animation = animation }));
+            // The animation drives the joints by node index: the model is generated from the design it was flown with.
+            if (model.Proxy.Model.Nodes.Count != recording.ProxyNodes) throw new InvalidOperationException("The recording doesn't match its design's proxy.");
+            var frames = recording.Decode();
+            var times = Enumerable.Range(0, recording.FrameCount).Select(i => i * recording.FrameTime).ToArray();
+            File.WriteAllBytes(path, GliderExporter.ToGlb(model, new GlbOptions { Animation = new ProxyAnimation(node.Name, times, frames.Positions) }));
             return [path];
         });
+    }
+
+    /// <summary>Adds a recorded flight under <paramref name="node"/> (the flight goes on: the selection stays).</summary>
+    public RecordingNode AddRecording(ParagliderNode node, ParagliderToolbox.Paraglider.Simulation.FlightRecording recording)
+    {
+        var flight = new RecordingNode
+        {
+            Name = string.Create(System.Globalization.CultureInfo.CurrentCulture, $"Flight {recording.Recorded:yyyy-MM-dd HH:mm:ss} ({recording.Duration:0.0} s)"),
+            Recording = recording,
+        };
+        node.Children.Add(flight);
+        return flight;
     }
 
     private async Task ExportFileAsync(string title, string filter, string suffix, Action<GliderModel, string> write, bool textures = true)
@@ -182,12 +197,14 @@ public sealed partial class ParagliderActions : ObservableObject
         }, textures);
     }
 
-    private async Task RunExportAsync(ParagliderNode node, Func<GliderModel, List<string>> write, bool textures = true)
+    private Task RunExportAsync(ParagliderNode node, Func<GliderModel, List<string>> write, bool textures = true) =>
+        RunExportAsync(node.Snapshot(), write, textures);
+
+    private async Task RunExportAsync(ParagliderToolbox.Paraglider.Design.GliderDesign design, Func<GliderModel, List<string>> write, bool textures = true)
     {
         IsExporting = true;
         try
         {
-            var design = node.Snapshot();
             var files = await Task.Run(() => write(GliderGenerator.Generate(design, new GenerateOptions(textures ? 0 : -1))));
             await _toolbox.Dialogs.ShowMessageAsync("Export finished",
                 string.Join("\n", files.Select(f => $"{Path.GetFileName(f)}  ({new FileInfo(f).Length / 1024.0:#,0} KB)")) + $"\n\nin {Path.GetDirectoryName(files[0])}");

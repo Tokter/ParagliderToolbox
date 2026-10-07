@@ -150,6 +150,82 @@ public class ParagliderModuleTests
     }
 
     [Fact]
+    public void Recordings_AreStoredUnderTheirParaglider_AndRoundTrip()
+    {
+        var toolbox = CreateToolbox();
+        var node = new ParagliderNode { ProxyComplexity = ProxyComplexity.Arcade };
+        toolbox.Document.Project.Children.Add(node);
+        var design = node.Snapshot();
+        var sim = new ParagliderToolbox.Paraglider.Simulation.GliderSimulator(
+            ParagliderToolbox.Paraglider.GliderGenerator.Generate(design, new ParagliderToolbox.Paraglider.GenerateOptions(-1)).Proxy.Model);
+        var recorder = new ParagliderToolbox.Paraglider.Simulation.FlightRecorder(sim, design);
+        for (int i = 0; i < 90; i++)
+        {
+            if (i == 30) recorder.Start();
+            sim.Inputs.BrakeRight = i / 90f;
+            recorder.BeforeStep();
+            sim.Step(1 / 60f);
+            recorder.AfterStep();
+        }
+        var recording = recorder.Stop();
+        var flight = new ParagliderActions(toolbox).AddRecording(node, recording);
+
+        Assert.True(node.CanContain(typeof(RecordingNode)));
+        Assert.Same(flight, Assert.Single(node.Recordings));
+        Assert.StartsWith("Flight ", flight.Name);
+        Assert.Equal(30, recording.FrameCount);
+
+        var loaded = toolbox.Serializer.Deserialize(toolbox.Serializer.Serialize(toolbox.Document.Project));
+        var copy = Assert.IsType<RecordingNode>(Assert.Single(((ParagliderNode)loaded.Children[0]).Children));
+        Assert.Equal(flight.Name, copy.Name);
+        Assert.Equal(recording.FrameCount, copy.Recording.FrameCount);
+        Assert.Equal(recording.FirstStep, copy.Recording.FirstStep);
+        Assert.Equal(recording.Inputs, copy.Recording.Inputs);
+        Assert.Equal(ProxyComplexity.Arcade, copy.Recording.Design!.ProxyComplexity);
+        Assert.Equal(recording.Decode().Positions[^1][3], copy.Recording.Decode().Positions[^1][3]);
+        Assert.Equal(flight.Duration, copy.Duration);
+    }
+
+    [Fact]
+    public async Task Recordings_ExportAsAnimatedGltf_OfTheDesignTheyWereFlownWith()
+    {
+        var dialogs = new FakeDialogs();
+        var toolbox = CreateToolbox(dialogs);
+        var node = new ParagliderNode { ProxyComplexity = ProxyComplexity.Arcade, TextureSize = 256 };
+        toolbox.Document.Project.Children.Add(node);
+        var design = node.Snapshot();
+        var sim = new ParagliderToolbox.Paraglider.Simulation.GliderSimulator(
+            ParagliderToolbox.Paraglider.GliderGenerator.Generate(design, new ParagliderToolbox.Paraglider.GenerateOptions(-1)).Proxy.Model);
+        var recorder = new ParagliderToolbox.Paraglider.Simulation.FlightRecorder(sim, design);
+        recorder.Start();
+        for (int i = 0; i < 20; i++)
+        {
+            recorder.BeforeStep();
+            sim.Step(1 / 60f);
+            recorder.AfterStep();
+        }
+        var actions = new ParagliderActions(toolbox);
+        var flight = actions.AddRecording(node, recorder.Stop());
+        // Edited afterwards: the export still uses the proxy it was flown with.
+        node.ProxyComplexity = ProxyComplexity.Low;
+
+        string path = Path.Combine(Path.GetTempPath(), $"recording-{Guid.NewGuid():N}.glb");
+        dialogs.SaveAnswer = path;
+        try
+        {
+            await actions.ExportRecordingAsync(flight);
+            byte[] glb = File.ReadAllBytes(path);
+            Assert.Equal("glTF", System.Text.Encoding.ASCII.GetString(glb, 0, 4));
+            Assert.Contains("\"animations\"", System.Text.Encoding.UTF8.GetString(glb));
+            Assert.DoesNotContain(dialogs.Asked, a => a.StartsWith("Error"));
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
     public void PolarOptions_RoundTripTheRecorderSettings()
     {
         var settings = new ParagliderToolbox.Paraglider.Polar.PolarRecorderSettings
