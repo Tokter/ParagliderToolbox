@@ -119,6 +119,16 @@ Exported glTF models rendered in Blender 4.4 with Cycles (sky, procedural terrai
 the canopy, ribs, rigging, textures and normal maps come straight from the export). `docs/images/render.py` renders
 them again: `blender -b --python docs/images/render.py -- model.glb out hero,side,backlit,nose 256 1`.
 
+`docs/images/render_flight.py` turns an exported recorded flight into a video: procedural mountains, a stand-in pilot,
+and a camera that follows the glider (smoothed), slowly circles it and backs off whenever the wing would leave the
+frame. Render a few stills to check the look, then every frame (it resumes), then encode them into `flight.mp4`:
+
+```bash
+blender -b --python docs/images/render_flight.py -- flight.glb out stills:0,120,240 32 0.5
+blender -b --python docs/images/render_flight.py -- flight.glb out frames 64 1
+blender -b --python docs/images/render_flight.py -- flight.glb out encode
+```
+
 | | |
 |---|---|
 | ![Front three-quarter view](docs/images/render-blue-hero.jpg) | ![Stripes pattern in evening light](docs/images/render-sunset-evening.jpg) |
