@@ -205,7 +205,7 @@ public static class GliderPresets
         MiddleLinesPerMain = 2,
         UpperLineDiameter = 0.6, MiddleLineDiameter = 0.9, MainLineDiameter = 1.5,
         RiserLength = 0.5,
-        BrakeSlack = 0.1,
+        BrakeSlack = 0.13,
         BrakeTravel = 0.6,
         SpeedBarTravel = 0.10,
         TrimAngleOfAttack = 9.6,

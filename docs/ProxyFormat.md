@@ -62,6 +62,9 @@ all segments of a line share it) and `dragDiameter`.
 is limp fabric. The solver blends the compliance against compression (and for `bend` in both directions) from
 `compressionCompliance` when the cells around the constraint are inflated to `deflatedCompliance` when they are empty
 (see *Fabric firmness* below). 0 means it doesn't depend on the pressure (single-surface proxies, the leading edge rods).
+In the trailing edge bay (behind the last line row, and at least the rear 40% of the chord) `compressionCompliance` is
+soft even for inflated cells (0.005): the thin rear of the profile wrinkles, so the brakes curl the trailing edge down
+(camber) instead of pitching the whole profile up. (Softer still, a collapsed wing tumbled instead of reopening.)
 
 ### Sections and strips
 
@@ -92,7 +95,11 @@ second (letting go twice as fast), since hands and feet don't move instantly.
 
 ## Simulation algorithm
 
-Per frame (e.g. 1/60 s), `substeps` times (16 for Medium; more for High):
+Per frame (e.g. 1/60 s), `substeps` times: 16, times the pilot's load factor `n` when it is above 1 (at most 64).
+`n = |g − a| / |g|`, with `a` the pilot's acceleration over the previous frames (smoothed with a 0.3 s time constant).
+One constraint pass per substep resolves a heavily loaded line set too softly: with a fixed 16, a spiral dive snapped
+the outer tip once it pulled about 2 G and flipped into a reversal or a spin. Straight flight keeps 16 (and the
+calibrated polar).
 
 1. **Forces** (recomputed every substep: the aerodynamic damping of the light canopy nodes is too stiff for longer steps)
    - gravity `m·g`;
@@ -130,17 +137,23 @@ For each strip (sections A and B):
 - **Load weights** `wₖ` over the strip's nodes: each node's share of the strip area, tilted linearly along the chord so
   the weighted centroid is the strip's center of pressure (start at 0.3). The strip velocity is the **weighted average**
   of its nodes' velocities with the same weights; this way lift does no work on the strip's own rotation.
-- `air = wind − v`; `flow` = air without its span component; `V = |flow|`; `α = atan2(flow·û, flow·ĉ)`.
+- `air = wind − v`; `flow` = air without its span component; `V = |flow|`; `α_chord = atan2(flow·û, flow·ĉ)`.
 - Flap (brakes): angle between the front (nose → 60% chord node) and rear (60% → tail) chord segments, minus its rest
   value: `δ`.
-- Induced angle by a few damped fixed-point iterations: `αᵢ ← ½αᵢ + ½·(Cl(α−αᵢ) + ΔCl_flap) / (π·AR·e)` with
-  `AR = inducedAspectRatio`, `e = spanEfficiency`.
-- Coefficients from the **sampled polar** at `α − αᵢ` (linear interpolation); add the flap:
-  `ΔCl = slope · 0.5 · δ · attached` (attached = `1/(1+exp((α − α_stall)/2.5))`), `Cm −= 0.3·ΔCl`,
-  `Cd += 0.6·δ² + Cl·αᵢ`.
+- **Angle of attack against the front of the profile**: `α = α_chord − (φ − φ_rest)` with `φ` the angle of the front
+  segment (nose → 60% node) in the (`ĉ`, `û`) frame. A trailing edge pulled down turns the chord but not the front, so
+  the deflection counts once, as the flap, not also as angle of attack. (The inlet below uses `α_chord`.)
+- Induced angle by a few damped fixed-point iterations: `αᵢ ← ½αᵢ + ½·(Cl(αₑ) + ΔCl_flap) / (π·AR·e)` with
+  `AR = inducedAspectRatio`, `e = spanEfficiency` and the effective angle `αₑ = α − αᵢ + 0.15·δ`: a braked profile
+  stalls earlier against its front (part of the deflection acts like angle of attack).
+- Coefficients from the **sampled polar** at `αₑ` (linear interpolation); add the flap's camber lift:
+  `ΔCl = slope · 0.4 · δ · attached` (attached = `1/(1+exp((αₑ − α_stall)/2.5))`; it raises the maximum lift),
+  `Cm −= 0.07·ΔCl` (a flap of the rear 38% lifts at about 0.32 chord), `Cd += 0.4·δ² + Cl·αᵢ`. Calibrated so each
+  class stalls with both brakes at about 80% of its travel (EN-A 64 cm … EN-D 48 cm) at 22–27 km/h.
 - A deflated cell is a crumpled bag: `Cl *= 0.25 + 0.75·p`, `Cd += 0.3·(1 − p)` with `p` = its pressure clamped to 0…1.
 - `F = ½ρV² · |ĉ chord| · |span| · (Cl·L̂ + Cd·flow/V)` with `L̂` = `û` made perpendicular to the flow; spread with the
-  load weights. Next center of pressure: `0.25 − Cm/Cl` (clamped 0.05…0.9), smoothed.
+  load weights, except the flap drag (`½ρV²·S·0.4·δ²` along the flow), which acts on the deflected rear: the nodes behind
+  the 60% node by their area share. Next center of pressure: `0.25 − Cm/Cl` (clamped 0.05…0.9), smoothed.
 - **Pitch damping**: the strip velocity is sampled at the center of pressure, so it doesn't see the strip rotating.
   Add the quasi-steady thin-airfoil damping `M = −π/16 · ρ·V·S·c² · ω` with `ω = ((v_LE − v_TE)·û)/c` (nose-up
   positive) and `S` the strip area, as a couple: `−M/(2c)·û` on each leading-edge node and `+M/(2c)·û` on each
@@ -151,19 +164,28 @@ For each strip (sections A and B):
 
 Each strip's pressure `p` (−0.25 sucked in … 1 inflated) moves toward a target: with `cellDeflationTimeConstant`
 when it falls, and with `cellPressureTimeConstant · clamp(10 / V, 0.5, 3)` when it rises (the inlet takes in more air
-faster). The target of a cell with an inlet (and V > 2 m/s) depends on the **inlet's angle of attack** `α_inlet`: the
-strip's `α` corrected by how far the nose has turned against the rest of the profile (the direction from the leading
-edge to the first nodes behind it, compared with the rest pose), so a nose folded under closes the inlet even when the
-rest of the cell still looks like a profile:
+faster). The target of a cell with an inlet (and V > 2 m/s) depends on how the inlet faces the flow:
+
+- The **inlet's angle of attack** `α_inlet`: the strip's `α` corrected by how far the nose has turned against the rest
+  of the profile (the direction from the leading edge to the first nodes behind it, compared with the rest pose), so a
+  nose folded under closes the inlet even when the rest of the cell still looks like a profile.
+- The **facing angle** `ψ` between the direction the inlet faces and the oncoming flow, in 3D: at rest the inlet faces
+  the trim flow (the strip's `α_trim`, from the rest pose and the trim glide path), and it turns with the nose, so
+  `cos ψ = cos(α_inlet − α_trim) · V_strip / |v_air|` (`V_strip` the flow speed in the strip's plane, `v_air` the whole
+  relative wind: flow along the span, past a folded tip or in sideslip, passes the inlet by).
+
+The ram `r(ψ)` is 1 within the capture angle (30°, `SimulatorSettings.InletCaptureAngle`), then
+`cos²(90° · (ψ − 30°) / 60°)`, falling to 0 when the flow passes across the inlet (ψ = 90°), then ramps to −0.25 (sucked
+empty) at 120° and stays there for flow from behind. The flow coming over the nose closes the inlet whatever the facing:
 
 | `α_inlet` | target |
 |---|---|
 | below `inletClosingAlpha − 3°` | −0.25 (flow over the nose: sucked empty) |
-| up to `inletClosingAlpha` | ramps to 1 |
-| up to 35° | 1 |
-| 35° … 60° | ramps to 0.35 (deep stall: the flow from below meets the inlets side-on) |
-| 60° … 110° | 0.35 |
-| 110° … 150° | ramps to −0.25 (flow from behind) |
+| up to `inletClosingAlpha` | ramps from −0.25 to `r(ψ)` |
+| above | `r(ψ)` |
+
+So a deeply stalled wing (flow from below, α ≈ 40°, ψ ≈ 30°) keeps its pressure, and a full stall (wing back, flow from
+below and behind, ψ ≈ 80° and more) empties the cells.
 
 The target is scaled by how open the inlet is: the profile height just behind the nose relative to its rest height
 (closed below 25%, open above 75%, smoothstep between). A control closing the strip (pulled A lines) blends the target

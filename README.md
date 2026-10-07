@@ -70,7 +70,10 @@ Adding a paraglider asks for a starting point:
   shift, asymmetric and frontal collapses, big ears, gusts, stalls and spins, with the high resolution model following
   the proxy. The canopy is fabric held in shape by its pressure: empty cells go limp, so collapses fold the canopy under,
   big ears fold the tips, a frontal folds the span into a horseshoe and a full stall crumples it; it reopens as the cells
-  refill. Record a flight (Ctrl+R) and export it as an animation.
+  refill. Record a flight (Ctrl+R) and export it as an animation. The **Forces** view (5) draws the lift, canopy drag,
+  line drag and pilot drag as arrows from where the simulation applies them, as long as they are strong: per node, or
+  summed per strip at its center of pressure; with the totals and the force balance's L/D. It also shows the load the
+  pilot hangs in the harness with (weight and inertia: down, and out of a turn), and the telemetry shows the G load.
 
   | Simulation: an asymmetric collapse | The physics proxy the high resolution model is skinned to |
   |---|---|
@@ -96,6 +99,7 @@ Adding a paraglider asks for a starting point:
 | Middle drag / Shift+middle drag / wheel | Orbit / pan / zoom |
 | Home, numpad 1 3 7, numpad 5, Shift+Z | Frame, views, orthographic, wireframe |
 | 1 2 3 4 | Show canopy, rigging, proxy, ribs |
+| 5, 6, D, - and = | Show the aerodynamic forces; per node or per strip; drag ×5; shorter and longer arrows |
 | P / R | Simulate or pause / reset |
 | Q, E, F, B, G | Collapse left, right, frontal, big ears, gust |
 | Ctrl+R | Record the simulation |

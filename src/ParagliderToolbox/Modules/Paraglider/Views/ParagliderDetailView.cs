@@ -18,7 +18,7 @@ namespace ParagliderToolbox.Modules.Paraglider.Views;
 /// </summary>
 /// <remarks>
 /// The view is a <see cref="KeybindingHandler"/> for the <see cref="ParagliderPreview.Group"/> commands (1–4 toggle the
-/// parts, P simulates, Q/E/F collapse, B big ears, G a gust, R resets, Ctrl+R records, Ctrl+P records the polar). The viewport has its own
+/// parts, 5 the forces, P simulates, Q/E/F collapse, B big ears, G a gust, R resets, Ctrl+R records, Ctrl+P records the polar). The viewport has its own
 /// navigation: middle drag orbits, Shift+middle drag pans, the wheel zooms, Home frames the model, Shift+Z wireframe.
 /// </remarks>
 public sealed class ParagliderDetailView : KeybindingHandler
@@ -88,6 +88,8 @@ public sealed class ParagliderDetailView : KeybindingHandler
             Toggle("Ribs", MaterialIconKind.ViewColumn, _preview, p => p.ShowRibs, (p, v) => p.ShowRibs = v, "Show the internal ribs (4)"),
             Toggle("Rigging", MaterialIconKind.Timeline, _preview, p => p.ShowRigging, (p, v) => p.ShowRigging = v, "Show the lines, risers and toggles (2)"),
             Toggle("Proxy", MaterialIconKind.Hub, _preview, p => p.ShowProxy, (p, v) => p.ShowProxy = v, "Show the physics proxy (3)"),
+            Toggle("Forces", MaterialIconKind.ArrowUpward, _preview, p => p.ShowForces, (p, v) => p.ShowForces = v,
+                "Show the lift and drag where they act while simulating, as long as they are strong (5; 6 per node or per strip, D exaggerates the drag, - and = scale)"),
             new Button().Variant(ButtonVariant.Text).Height(30).MinHeight(0).Padding(8, 0)
                 .Content(new Icon().Kind(MaterialIconKind.CenterFocusStrong).Size(18)).ToolTip("Frame the glider (Home)").OnClick(Frame),
             new Border().Width(12),
@@ -163,7 +165,38 @@ public sealed class ParagliderDetailView : KeybindingHandler
             .BindIsVisible(_preview, p => p.Simulator != null || p.IsSimulating)
             .Child(new StackPanel().Spacing(6).Children(
                 controls,
-                new TextBlock().BodySmall().FontFamily("Consolas").BindText(_preview, p => p.Telemetry)));
+                new TextBlock().BodySmall().FontFamily("Consolas").BindText(_preview, p => p.Telemetry),
+                ForceLegend()));
+    }
+
+    // While the forces are shown: what the arrow colors are, the scale and the totals, and the force display options.
+    private UIElement ForceLegend()
+    {
+        static UIElement Swatch(Color color, string text) =>
+            new StackPanel().Orientation(Orientation.Horizontal).Spacing(5).VerticalAlignment(VerticalAlignment.Center).Children(
+                new Border().Width(14).Height(4).CornerRadius(2).Background(color).VerticalAlignment(VerticalAlignment.Center),
+                new TextBlock(text).BodySmall().VerticalAlignment(VerticalAlignment.Center));
+
+        static Button Option(System.Windows.Input.ICommand command, MaterialIconKind icon, string tip) =>
+            new Button().Variant(ButtonVariant.Text).Command(command).Height(26).MinHeight(0).Padding(6, 0)
+                .Content(new Icon().Kind(icon).Size(16)).ToolTip(tip);
+
+        return new WrapPanel().Spacing(14, 4).BindIsVisible(_preview, p => p.ShowForces).Children(
+            Swatch(ParagliderPreview.LiftColor, "Lift"),
+            Swatch(ParagliderPreview.CanopyDragColor, "Canopy drag"),
+            Swatch(ParagliderPreview.LineDragColor, "Line drag"),
+            Swatch(ParagliderPreview.PilotDragColor, "Pilot drag"),
+            Swatch(ParagliderPreview.PilotLoadColor, "Pilot load (G)"),
+            new StackPanel().Orientation(Orientation.Horizontal).Spacing(2).Children(
+                new ToggleButton().Height(26).MinHeight(0).Padding(8, 0).Content(new TextBlock("Per strip").BodySmall())
+                    .ToolTip("Sum the canopy's forces per strip, at its center of pressure, instead of per node (6)")
+                    .BindIsChecked(_preview, p => p.ForcesPerStrip, (p, v) => p.ForcesPerStrip = v),
+                new ToggleButton().Height(26).MinHeight(0).Padding(8, 0).Content(new TextBlock("Drag ×5").BodySmall())
+                    .ToolTip("Draw the drag five times longer (D)")
+                    .BindIsChecked(_preview, p => p.ExaggerateDrag, (p, v) => p.ExaggerateDrag = v),
+                Option(_preview.ShorterForceArrowsCommand, MaterialIconKind.ZoomOut, "Shorter arrows (-)"),
+                Option(_preview.LongerForceArrowsCommand, MaterialIconKind.ZoomIn, "Longer arrows (=)")),
+            new TextBlock().BodySmall().FontFamily("Consolas").VerticalAlignment(VerticalAlignment.Center).BindText(_preview, p => p.ForceLegend));
     }
 
     private void Frame()

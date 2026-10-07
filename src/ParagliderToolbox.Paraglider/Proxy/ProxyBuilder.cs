@@ -60,6 +60,14 @@ public sealed record ProxyMaterial
     /// <summary>Gets the compliance of the bending constraints of an inflated cell.</summary>
     public float Bend { get; init; } = 4e-3f;
 
+    /// <summary>
+    /// Gets the compliance against compression and bending in the trailing edge bay (behind the last line row and the rear
+    /// 40 % of the chord), inflated or not. The profile is thin there, and pressure keeps a thin bay from wrinkling only
+    /// against tiny moments: the brakes curl the trailing edge down (camber) against the airload instead of pitching a
+    /// rigid profile.
+    /// </summary>
+    public float TrailingEdgeCompression { get; init; } = 0.005f;
+
     /// <summary>Gets the compliance of all canopy constraints against compression and folding when the cells are empty (fabric buckles).</summary>
     public float Deflated { get; init; } = 0.05f;
 
@@ -145,7 +153,9 @@ public static class ProxyBuilder
         var sectionRibs = ChooseSectionRibs(shape, rigging, settings);
         var stations = ChooseStations(design.RowPositions, settings.ExtraStations);
         BuildSections(model, shape, sectionRibs, stations, settings.DoubleSurface);
-        BuildFabric(model, settings.DoubleSurface, material, design.LeadingEdgeRods);
+        // The trailing edge bay: behind the last line row, and at least the rear 40 % of the chord (a two-liner holds the middle
+        // of its profile with rods and the inflated structure).
+        BuildFabric(model, settings.DoubleSurface, material, design.LeadingEdgeRods, Math.Max(0.6f, (float)design.RowPositions.Max()));
         var (rigNodes, chains) = BuildRigging(model, shape, rigging, sectionRibs, settings, material);
         if (settings.DoubleSurface) BuildDiagonalRibs(model, material);
         BuildStrips(model, shape, sectionRibs, settings.DoubleSurface);
@@ -265,8 +275,12 @@ public static class ProxyBuilder
         return chain;
     }
 
-    private static void BuildFabric(ProxyModel model, bool doubleSurface, ProxyMaterial material, bool rods)
+    private static void BuildFabric(ProxyModel model, bool doubleSurface, ProxyMaterial material, bool rods, float softFrom)
     {
+        // In the trailing edge bay (from softFrom on) the fabric is limp against compression and bending.
+        bool Aft(ProxySection section, int k, int count) => doubleSurface && StationOf(section, k, count) >= softFrom - 1e-4f;
+        float softCompression = Math.Max(material.TrailingEdgeCompression, material.FabricCompression);
+        float ribSoft = Math.Max(material.TrailingEdgeCompression, material.RibCompression);
         // A single camber surface has no cells to inflate: it stays a stiff, arcade-style sail.
         float fabricCompression = doubleSurface ? material.FabricCompression : 4e-4f;
         float shearCompression = doubleSurface ? material.ShearCompression : material.Shear;
@@ -279,24 +293,29 @@ public static class ProxyBuilder
             foreach (bool upper in surfaces)
             {
                 var chain = Chain(section, upper);
-                for (int k = 0; k < chain.Count - 1; k++) AddDistance(model, chain[k], chain[k + 1], ConstraintKind.Chordwise, material.Fabric, fabricCompression, deflated);
+                for (int k = 0; k < chain.Count - 1; k++)
+                    AddDistance(model, chain[k], chain[k + 1], ConstraintKind.Chordwise, material.Fabric, Aft(section, k, chain.Count) ? softCompression : fabricCompression, deflated);
                 for (int k = 0; k < chain.Count - 2; k++)
                 {
                     // Leading edge rods keep the nose round (up to about a fifth of the chord).
                     bool rod = rods && doubleSurface && StationOf(section, k + 2, chain.Count) <= 0.2f;
                     float c = rod ? material.RodBend : bend;
-                    AddDistance(model, chain[k], chain[k + 2], ConstraintKind.Bend, c, c, rod ? 0 : deflated);
+                    AddDistance(model, chain[k], chain[k + 2], ConstraintKind.Bend, c, Aft(section, k + 1, chain.Count) ? Math.Max(c, softCompression) : c, rod ? 0 : deflated);
                 }
             }
             if (doubleSurface)
             {
+                int count = section.Upper.Count + 2;
                 for (int k = 0; k < section.Upper.Count; k++)
                 {
-                    AddDistance(model, section.Upper[k], section.Lower[k], ConstraintKind.Rib, material.Rib, material.RibCompression, deflated);
+                    // Station k + 1 of the chain; the rib at the last row itself holds that row's tabs.
+                    bool behind = StationOf(section, k + 1, count) > softFrom + 1e-4f;
+                    AddDistance(model, section.Upper[k], section.Lower[k], ConstraintKind.Rib, material.Rib, behind ? ribSoft : material.RibCompression, deflated);
                     if (k + 1 < section.Upper.Count)
                     {
-                        AddDistance(model, section.Upper[k], section.Lower[k + 1], ConstraintKind.Rib, material.Rib, material.RibCompression, deflated);
-                        AddDistance(model, section.Upper[k + 1], section.Lower[k], ConstraintKind.Rib, material.Rib, material.RibCompression, deflated);
+                        float diagonal = Aft(section, k + 1, count) ? ribSoft : material.RibCompression;
+                        AddDistance(model, section.Upper[k], section.Lower[k + 1], ConstraintKind.Rib, material.Rib, diagonal, deflated);
+                        AddDistance(model, section.Upper[k + 1], section.Lower[k], ConstraintKind.Rib, material.Rib, diagonal, deflated);
                     }
                 }
             }
@@ -311,12 +330,15 @@ public static class ProxyBuilder
                 {
                     if (!upper || (k > 0 && k < a.Count - 1)) // nose and tail are shared by both surfaces
                     {
-                        AddDistance(model, a[k], b[k], ConstraintKind.Spanwise, material.Fabric, fabricCompression, deflated);
+                        bool behind = doubleSurface && StationOf(section, k, a.Count) > softFrom + 1e-4f;
+                        AddDistance(model, a[k], b[k], ConstraintKind.Spanwise, material.Fabric, behind ? softCompression : fabricCompression, deflated);
                     }
                     if (k + 1 < a.Count)
                     {
-                        AddDistance(model, a[k], b[k + 1], ConstraintKind.Shear, material.Shear, shearCompression, deflated);
-                        AddDistance(model, a[k + 1], b[k], ConstraintKind.Shear, material.Shear, shearCompression, deflated);
+                        // The skin of the trailing edge bay wrinkles as the brakes curl it.
+                        float shear = Aft(section, k, a.Count) ? Math.Max(softCompression, shearCompression) : shearCompression;
+                        AddDistance(model, a[k], b[k + 1], ConstraintKind.Shear, material.Shear, shear, deflated);
+                        AddDistance(model, a[k + 1], b[k], ConstraintKind.Shear, material.Shear, shear, deflated);
                     }
                 }
             }

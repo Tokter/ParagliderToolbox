@@ -42,6 +42,11 @@ public sealed partial class ParagliderPreview : ObservableObject, IDisposable
     private readonly Mesh3D _proxyPoints = new(PrimitiveTopology.Points);
     private readonly MeshInstance3D _proxyLinesInstance;
     private readonly MeshInstance3D _proxyPointsInstance;
+    private readonly Mesh3D _forceLines = new(PrimitiveTopology.Lines);
+    private readonly MeshInstance3D _forceLinesInstance;
+    private Vector3[] _forcePositions = [];
+    private bool? _forceLayoutPerStrip; // the layout the force mesh was built for (null: none yet)
+    private float _forceUnit; // newtons per meter of arrow at scale 1
     private CancellationTokenSource? _generation;
     private int _generatedVersion = -1;
     private bool _disposed;
@@ -79,6 +84,11 @@ public sealed partial class ParagliderPreview : ObservableObject, IDisposable
     [ObservableProperty] private float _brakeRight;
     [ObservableProperty] private float _speedBar;
     [ObservableProperty] private float _weightShift;
+    [ObservableProperty] private bool _showForces;
+    [ObservableProperty] private bool _forcesPerStrip;
+    [ObservableProperty] private bool _exaggerateDrag;
+    [ObservableProperty] private float _forceScale = 1;
+    [ObservableProperty] private string _forceLegend = string.Empty;
 
     /// <summary>Initializes the preview of <paramref name="node"/>.</summary>
     public ParagliderPreview(ParagliderNode node, Func<ParagliderActions> actions)
@@ -87,8 +97,10 @@ public sealed partial class ParagliderPreview : ObservableObject, IDisposable
         _actions = actions;
         _proxyLinesInstance = new MeshInstance3D(_proxyLines, new Material3D { BaseColor = Color.FromRgb(255, 196, 0), Unlit = true }) { Name = "Proxy", DrawOnTop = true, IsVisible = false };
         _proxyPointsInstance = new MeshInstance3D(_proxyPoints, new Material3D { BaseColor = Color.FromRgb(255, 112, 67), Unlit = true, PointSize = 5 }) { Name = "Proxy nodes", DrawOnTop = true, IsVisible = false };
+        _forceLinesInstance = new MeshInstance3D(_forceLines, new Material3D { BaseColor = Color.FromRgb(255, 255, 255), Unlit = true }) { Name = "Forces", DrawOnTop = true, IsVisible = false };
         Scene.Instances.Add(_proxyLinesInstance);
         Scene.Instances.Add(_proxyPointsInstance);
+        Scene.Instances.Add(_forceLinesInstance);
         _node.PropertyChanged += OnNodePropertyChanged;
         Regenerate();
     }
@@ -180,7 +192,7 @@ public sealed partial class ParagliderPreview : ObservableObject, IDisposable
                 var mesh = new Mesh3D();
                 mesh.SetGeometry(part.Positions.ToArray(), part.Indices.ToArray(), part.Normals.ToArray(), part.TexCoords.ToArray(), colors);
                 var instance = new MeshInstance3D(mesh, _materials[part.Material]) { Name = part.Name };
-                Scene.Instances.Insert(Scene.Instances.Count - 2, instance);
+                Scene.Instances.Insert(Scene.Instances.IndexOf(_proxyLinesInstance), instance);
                 _parts.Add((part, mesh, instance, model.Skin[p]));
             }
         }
@@ -277,6 +289,7 @@ public sealed partial class ParagliderPreview : ObservableObject, IDisposable
         }
         _proxyLinesInstance.IsVisible = ShowProxy;
         _proxyPointsInstance.IsVisible = ShowProxy;
+        _forceLinesInstance.IsVisible = ShowForces && _simulator != null && _forceLayoutPerStrip != null;
     }
 
     #endregion
@@ -298,6 +311,29 @@ public sealed partial class ParagliderPreview : ObservableObject, IDisposable
     [RelayCommand]
     [property: Command("ToggleRibs", Group, Label = "Show internal ribs", Icon = MaterialIcons.ViewColumn, Description = "Show or hide the internal ribs", DefaultKeybinding = "4")]
     private void ToggleRibs() => ShowRibs = !ShowRibs;
+
+    [RelayCommand]
+    [property: Command("ToggleForces", Group, Label = "Show aerodynamic forces", Icon = MaterialIcons.ArrowUpward,
+        Description = "Show or hide the lift and drag where they act on the proxy while simulating: arrows as long as the forces are strong", DefaultKeybinding = "5")]
+    private void ToggleForces() => ShowForces = !ShowForces;
+
+    [RelayCommand]
+    [property: Command("ToggleForcesPerStrip", Group, Label = "Forces per strip", Icon = MaterialIcons.ViewColumn,
+        Description = "Show the canopy's lift and drag per node (where the simulation applies them) or summed per strip at its center of pressure", DefaultKeybinding = "6")]
+    private void ToggleForcesPerStrip() => ForcesPerStrip = !ForcesPerStrip;
+
+    [RelayCommand]
+    [property: Command("ExaggerateDrag", Group, Label = "Exaggerate drag", Icon = MaterialIcons.Air,
+        Description = "Draw the drag arrows five times longer than the lift arrows (drag is about a ninth of the lift)", DefaultKeybinding = "D")]
+    private void ToggleExaggerateDrag() => ExaggerateDrag = !ExaggerateDrag;
+
+    [RelayCommand]
+    [property: Command("LongerForceArrows", Group, Label = "Longer force arrows", Icon = MaterialIcons.ZoomIn, Description = "Draw the force arrows longer", DefaultKeybinding = "Equal")]
+    private void LongerForceArrows() => ForceScale = Math.Min(50, ForceScale * 1.5f);
+
+    [RelayCommand]
+    [property: Command("ShorterForceArrows", Group, Label = "Shorter force arrows", Icon = MaterialIcons.ZoomOut, Description = "Draw the force arrows shorter", DefaultKeybinding = "Minus")]
+    private void ShorterForceArrows() => ForceScale = Math.Max(0.02f, ForceScale / 1.5f);
 
     [RelayCommand]
     [property: Command("Simulate", Group, Label = "Simulate", Icon = MaterialIcons.PlayArrow, Description = "Start or pause the flight simulation of the proxy", DefaultKeybinding = "P")]
@@ -447,7 +483,9 @@ public sealed partial class ParagliderPreview : ObservableObject, IDisposable
         if (Model is not { } model) return;
         if (_simulator is null)
         {
-            _simulator = new GliderSimulator(model.Proxy.Model);
+            // Recording the forces costs next to nothing, and they can be shown while paused.
+            _simulator = new GliderSimulator(model.Proxy.Model) { RecordForces = true };
+            _forceLayoutPerStrip = null;
             _deformer = new ProxyDeformer(model.Proxy.Model, model.SkinAttachments);
             _skin = new Matrix4x4[_deformer.JointCount];
             int largest = model.Parts.Max(p => p.VertexCount);
@@ -486,6 +524,8 @@ public sealed partial class ParagliderPreview : ObservableObject, IDisposable
         _deformer = null;
         _releaseAt.Clear();
         Telemetry = string.Empty;
+        ForceLegend = string.Empty;
+        UpdateVisibility();
         // Back to the rest pose.
         foreach (var (part, mesh, _, _) in _parts) mesh.UpdatePositions(part.Positions.ToArray(), part.Normals.ToArray());
         if (Model is { } model) BuildProxyMeshes(model.Proxy.Model, model.Proxy.Model.Nodes.Select(n => n.Position).ToArray(), rebuild: false);
@@ -544,6 +584,7 @@ public sealed partial class ParagliderPreview : ObservableObject, IDisposable
             mesh.UpdatePositions(_positionBuffer.AsSpan(0, count), _normalBuffer.AsSpan(0, count));
         }
         if (ShowProxy) BuildProxyMeshes(model.Proxy.Model, _shown, rebuild: false);
+        if (ShowForces) UpdateForces();
 
         var v = sim.PilotVelocity;
         float horizontal = MathF.Sqrt(v.X * v.X + v.Z * v.Z);
@@ -551,7 +592,7 @@ public sealed partial class ParagliderPreview : ObservableObject, IDisposable
         int deflated = 0;
         foreach (float p in pressure) if (p < 0.4f) deflated++;
         Telemetry = $"{sim.Time,5:0.0} s   airspeed {sim.Airspeed * 3.6f:0} km/h   vario {v.Y:+0.0;-0.0} m/s   glide {(v.Y < -0.05f ? horizontal / -v.Y : 99):0.0}   " +
-                    $"AoA {sim.CenterAngleOfAttack:0}°   deflated cells {deflated}/{pressure.Length}{(IsRecording ? $"   ● REC {_recordFrames.Count / 30.0:0.0} s" : "")}" +
+                    $"G {sim.LoadFactor:0.0}   AoA {sim.CenterAngleOfAttack:0}°   deflated cells {deflated}/{pressure.Length}{(IsRecording ? $"   ● REC {_recordFrames.Count / 30.0:0.0} s" : "")}" +
                     (_gamepad.GamepadName is { } padName ? $"   gamepad: {padName}" : "");
 
         // The camera follows the point between the pilot and the canopy.
@@ -601,6 +642,135 @@ public sealed partial class ParagliderPreview : ObservableObject, IDisposable
         _recordFrames.Add(frame);
         _recordTimes.Add(sim.Time);
         _nextRecordTime = sim.Time + 1 / 30f;
+    }
+
+    #endregion
+
+    #region Forces
+
+    /// <summary>The color of the lift arrows (and the legend's).</summary>
+    public static readonly Color LiftColor = Color.FromRgb(0x5C, 0xE0, 0x6A);
+
+    /// <summary>The color of the canopy drag arrows.</summary>
+    public static readonly Color CanopyDragColor = Color.FromRgb(0xFF, 0x4D, 0x4D);
+
+    /// <summary>The color of the line and riser drag arrows.</summary>
+    public static readonly Color LineDragColor = Color.FromRgb(0xFF, 0xA7, 0x26);
+
+    /// <summary>The color of the pilot drag arrow.</summary>
+    public static readonly Color PilotDragColor = Color.FromRgb(0xD0, 0x6B, 0xFF);
+
+    /// <summary>The color of the pilot load arrow (weight and inertia, the G load).</summary>
+    public static readonly Color PilotLoadColor = Color.FromRgb(0x4F, 0xC3, 0xF7);
+
+    /// <summary>How long the pilot load arrow is per G (m): the load is much larger than the aerodynamic forces.</summary>
+    public const float PilotLoadMetersPerG = 1.5f;
+
+    partial void OnShowForcesChanged(bool value)
+    {
+        UpdateForces();
+        UpdateVisibility();
+        if (!value) ForceLegend = string.Empty;
+    }
+
+    partial void OnForcesPerStripChanged(bool value) => UpdateForces();
+    partial void OnExaggerateDragChanged(bool value) => UpdateForces();
+    partial void OnForceScaleChanged(float value) => UpdateForces();
+
+    // Arrows from where the simulator applies the aerodynamic forces, as long as they are strong (also while paused):
+    // per node the canopy's lift and drag shares, or per strip their sums at its center of pressure; and the line,
+    // riser and pilot drag on the nodes; and the pilot's load (weight and inertia) on its own scale.
+    private void UpdateForces()
+    {
+        if (!ShowForces || _simulator is not { } sim || Model is not { } model || sim.NodeLift.Length == 0) return;
+        var proxy = model.Proxy.Model;
+        bool perStrip = ForcesPerStrip;
+        if (_forceLayoutPerStrip != perStrip) BuildForceMesh(proxy, perStrip);
+
+        float scale = ForceScale / _forceUnit; // meters per newton
+        float dragScale = scale * (ExaggerateDrag ? 5 : 1);
+        int k = 0;
+        void Arrow(Vector3 from, Vector3 force, float metersPerNewton)
+        {
+            _forcePositions[k++] = from;
+            _forcePositions[k++] = from + force * metersPerNewton;
+        }
+
+        var lift = Vector3.Zero;
+        var canopyDrag = Vector3.Zero;
+        if (perStrip)
+        {
+            for (int s = 0; s < proxy.Strips.Count; s++)
+            {
+                var a = proxy.Sections[proxy.Strips[s].SectionA];
+                var b = proxy.Sections[proxy.Strips[s].SectionB];
+                var leadingEdge = (_shown[a.LeadingEdge] + _shown[b.LeadingEdge]) * 0.5f;
+                var trailingEdge = (_shown[a.TrailingEdge] + _shown[b.TrailingEdge]) * 0.5f;
+                var center = Vector3.Lerp(leadingEdge, trailingEdge, sim.StripCenterOfPressure(s));
+                Arrow(center, sim.StripLift[s], scale);
+                Arrow(center, sim.StripDrag[s], dragScale);
+            }
+        }
+        else
+        {
+            for (int i = 0; i < proxy.Nodes.Count; i++)
+            {
+                Arrow(_shown[i], sim.NodeLift[i], scale);
+                Arrow(_shown[i], sim.NodeDrag[i], dragScale);
+            }
+        }
+        foreach (var force in sim.StripLift) lift += force;
+        foreach (var force in sim.StripDrag) canopyDrag += force;
+        var lineDrag = Vector3.Zero;
+        for (int i = 0; i < proxy.Nodes.Count; i++)
+        {
+            Arrow(_shown[i], sim.NodeParasiticDrag[i], dragScale);
+            if (i != proxy.Pilot) lineDrag += sim.NodeParasiticDrag[i];
+        }
+        var pilotDrag = sim.NodeParasiticDrag[proxy.Pilot];
+        // The load the pilot hangs in the harness with: down, and out of a turn.
+        float weight = MathF.Max(1e-3f, proxy.Nodes[proxy.Pilot].Mass * 9.81f);
+        Arrow(_shown[proxy.Pilot], sim.PilotLoad, PilotLoadMetersPerG / weight);
+        _forceLines.UpdatePositions(_forcePositions);
+
+        float drag = (canopyDrag + lineDrag + pilotDrag).Length();
+        ForceLegend = $"{(perStrip ? "per strip, at its center of pressure" : "per node")}   1 m = {_forceUnit / ForceScale:0.##} N" +
+                      (ExaggerateDrag ? $" (drag {_forceUnit / ForceScale / 5:0.##} N)" : "") +
+                      $"   lift {lift.Length():0} N, drag: canopy {canopyDrag.Length():0} N, lines {lineDrag.Length():0} N, pilot {pilotDrag.Length():0} N   L/D {(drag > 0 ? lift.Length() / drag : 0):0.0}   pilot load {sim.LoadFactor:0.0} G (1 G = {PilotLoadMetersPerG:0.#} m)";
+    }
+
+    // The arrows' vertices (two each, colored by the force) for a layout; and the scale: the mean lift arrow is 0.4 m
+    // per node or 1.2 m per strip (the glider's weight shared out).
+    private void BuildForceMesh(ProxyModel proxy, bool perStrip)
+    {
+        int nodes = proxy.Nodes.Count, strips = proxy.Strips.Count;
+        int arrows = (perStrip ? strips : nodes) * 2 + nodes + 1;
+        _forcePositions = new Vector3[arrows * 2];
+        var colors = new Vector4[arrows * 2];
+        int k = 0;
+        void Paint(Color color)
+        {
+            // Vertex colors are linear.
+            var linear = new Vector4(MathF.Pow(color.Rf, 2.2f), MathF.Pow(color.Gf, 2.2f), MathF.Pow(color.Bf, 2.2f), 1);
+            colors[k++] = linear;
+            colors[k++] = linear;
+        }
+        for (int i = 0; i < (perStrip ? strips : nodes); i++)
+        {
+            Paint(LiftColor);
+            Paint(CanopyDragColor);
+        }
+        for (int i = 0; i < nodes; i++) Paint(i == proxy.Pilot ? PilotDragColor : LineDragColor);
+        Paint(PilotLoadColor);
+        var indices = new uint[arrows * 2];
+        for (int i = 0; i < indices.Length; i++) indices[i] = (uint)i;
+        _forceLines.SetGeometry(new Vector3[arrows * 2], indices, colors: colors);
+
+        float weight = proxy.Nodes.Sum(n => MathF.Max(0, n.Mass)) * 9.81f;
+        int canopyNodes = proxy.Nodes.Count(n => n.Kind is ProxyNodeKind.Upper or ProxyNodeKind.Lower or ProxyNodeKind.Camber);
+        _forceUnit = perStrip ? weight / Math.Max(1, strips) / 1.2f : weight / Math.Max(1, canopyNodes) / 0.4f;
+        _forceLayoutPerStrip = perStrip;
+        UpdateVisibility();
     }
 
     #endregion

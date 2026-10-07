@@ -4,7 +4,14 @@
     <OutputType>WinExe</OutputType>
     <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
     <RootNamespace>ParagliderToolbox</RootNamespace>
+    <!-- The title bar's paraglider (Material Symbols "Paragliding"), white on the theme's primary color. -->
+    <ApplicationIcon>Assets\Icons\ParagliderToolbox.ico</ApplicationIcon>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- The window and taskbar icon, found by file name among the embedded resources. -->
+    <EmbeddedResource Include="Assets\Icons\ParagliderToolbox.png" />
+  </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="$(AtelierSrc)Atelier.Core\Atelier.Core.csproj" />

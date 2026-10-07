@@ -8,7 +8,8 @@ namespace ParagliderToolbox.Paraglider.Proxy;
 /// stall and backward flow.
 /// </summary>
 /// <remarks>
-/// Paraglider sections at Reynolds numbers around 10⁶ have a 2D lift slope near 2π·0.9, stall at 12–16°, and a profile
+/// Paraglider sections at Reynolds numbers around 10⁶ have a 2D lift slope near 2π·0.9, stall at 15–19° (thicker later;
+/// calibrated with the brakes to the certified symmetric brake travel of each class), and a profile
 /// drag coefficient around 0.012–0.015 (the inlets, the ballooning and the seams add to the airfoil's own; calibrated with
 /// the pilot and line drag to measured class polars). Beyond the stall
 /// the coefficients blend into a flat plate's (Cl ≈ 1.1·sin 2α, Cd ≈ 1.9·sin²α), which is what deep stalls and
@@ -20,7 +21,7 @@ public sealed class SectionPolar
     public SectionPolar(GliderDesign design)
     {
         ZeroLiftAlpha = -(design.Camber * 100 * 0.95) + design.Reflex * 100 * 1.2;
-        StallAlpha = 12 + (design.RootThickness - 0.14) * 60;
+        StallAlpha = 16.5 + (design.RootThickness - 0.14) * 60;
         ProfileDrag = 0.0075 + design.Ballooning * 0.04;
         MomentCoefficient = -(design.Camber * 2.2) + design.Reflex * 9;
     }

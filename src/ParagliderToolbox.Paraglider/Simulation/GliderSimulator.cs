@@ -33,14 +33,34 @@ public sealed record SimulatorSettings
     /// <summary>Gets the substeps per step (XPBD small steps with one iteration each).</summary>
     public int Substeps { get; init; } = 16;
 
+    /// <summary>
+    /// Gets whether the substeps grow with the load factor (<see cref="Substeps"/> times the G load, up to four times as
+    /// many). The lines carry the load, and one constraint pass per substep resolves a heavily loaded line set too
+    /// softly: at 16 substeps a spiral dive snapped the outer tip once it pulled about 2 G. Straight flight (1 G) keeps
+    /// <see cref="Substeps"/>.
+    /// </summary>
+    public bool SubstepsFollowLoad { get; init; } = true;
+
     /// <summary>Gets the air density (kg/m³).</summary>
     public float AirDensity { get; init; } = 1.225f;
 
     /// <summary>Gets the velocity damping per second (numerical, small).</summary>
     public float Damping { get; init; } = 0.05f;
 
-    /// <summary>Gets the lift a deflected trailing edge (brakes) adds, as a fraction of the lift slope per radian of deflection.</summary>
-    public float FlapEffectiveness { get; init; } = 0.5f;
+    /// <summary>
+    /// Gets the camber lift a deflected trailing edge (brakes) adds while the flow is attached, as a fraction of the lift
+    /// slope per radian of deflection (on top of <see cref="FlapStallShift"/>).
+    /// </summary>
+    public float FlapEffectiveness { get; init; } = 0.4f;
+
+    /// <summary>
+    /// Gets the part of the trailing edge deflection that acts like angle of attack: it adds lift too, and moves the stall
+    /// earlier (a braked profile stalls at a lower angle against its front, at a higher lift).
+    /// </summary>
+    public float FlapStallShift { get; init; } = 0.15f;
+
+    /// <summary>Gets the drag of a deflected trailing edge: <c>FlapDrag · δ²</c> (δ in radians) on the drag coefficient.</summary>
+    public float FlapDrag { get; init; } = 0.4f;
 
     /// <summary>Gets whether aerodynamic forces (lift and drag of the strips, lines and pilot) are applied.</summary>
     public bool Aerodynamics { get; init; } = true;
@@ -48,8 +68,12 @@ public sealed record SimulatorSettings
     /// <summary>Gets whether the ram-air pressure inflates the cells.</summary>
     public bool Pressure { get; init; } = true;
 
-    /// <summary>Gets the share of the full cell pressure a deeply stalled wing keeps (the flow from below still enters the inlets).</summary>
-    public float StalledInletPressure { get; init; } = 0.35f;
+    /// <summary>
+    /// Gets the half angle (degrees) of the cone around the direction an inlet faces within which the oncoming flow fills
+    /// its cell fully. Beyond it the ram falls off, to nothing when the flow passes across the inlet (90°), and the cell
+    /// is sucked empty when the flow comes from behind (120° and more). See <see cref="GliderSimulator.InletPressure"/>.
+    /// </summary>
+    public float InletCaptureAngle { get; init; } = 30;
 
     /// <summary>
     /// Gets how much softer the cells get at low airspeeds, as the exponent of the dynamic pressure relative to trim (0:
@@ -123,8 +147,9 @@ public sealed record SimulatorSettings
 /// </para>
 /// <para>
 /// Ram air: each cell's pressure follows a target with <see cref="ProxyModel.CellPressureTimeConstant"/>: the internal
-/// pressure coefficient while the inlet sees the flow (angle of attack above <see cref="ProxyModel.InletClosingAlpha"/>),
-/// slight suction otherwise; closed tip cells and neighbors share pressure through the cross-vents. Pressure pushes the
+/// pressure coefficient while the inlet faces the flow (see <see cref="InletPressure"/>), less as the flow turns across
+/// it, slight suction when it comes from behind or over the nose (angle of attack below
+/// <see cref="ProxyModel.InletClosingAlpha"/>); closed tip cells and neighbors share pressure through the cross-vents. Pressure pushes the
 /// cell's surfaces out; without it the cell folds under the line and air loads, which is how tucks and collapses happen.
 /// </para>
 /// <para>
@@ -175,12 +200,17 @@ public sealed class GliderSimulator
         public int LeA, TeA, LeB, TeB, MidA, MidB;
         public int ThroatUpperA, ThroatLowerA, ThroatUpperB, ThroatLowerB;
         public float RestNoseAngle;
+        public float RestFrontAngle;
+        public float Flap;
+        public float RestAlpha;
         public float InletAlpha;
+        public float InletFacing;
         public float RestThroatHeight;
         public float InletOpen = 1;
         public int[] Nodes = [];
         public float[] X = [];
         public float[] BaseWeight = [];
+        public float[] RearWeight = [];
         public int[] Surface = [];
         public bool HasInlet;
         public float RestFlap;
@@ -325,6 +355,15 @@ public sealed class GliderSimulator
     /// <summary>Gets the pilot's velocity.</summary>
     public Vector3 PilotVelocity => _velocities[_model.Pilot];
 
+    /// <summary>
+    /// Gets the load the pilot hangs in the harness with (N, smoothed over a few tenths of a second): the weight and the
+    /// inertia, m·(g − a). In a turn it points down and out of the turn, and the lines carry it.
+    /// </summary>
+    public Vector3 PilotLoad { get; private set; }
+
+    /// <summary>Gets the load factor (G): <see cref="PilotLoad"/> relative to the pilot's weight; 1 in a steady glide.</summary>
+    public float LoadFactor { get; private set; } = 1;
+
     /// <summary>Gets the pilot's airspeed (m/s).</summary>
     public float Airspeed => (Inputs.Wind - PilotVelocity).Length();
 
@@ -348,6 +387,41 @@ public sealed class GliderSimulator
     private Vector3 _canopyLift, _canopyDrag, _lineDrag, _pilotDrag;
     private (float Profile, float Induced, float Flap, float Deflated, float LiftSum) _dragTerms;
 
+    // The recorded forces where they act (see RecordForces), and the share of each substep in the step's average.
+    private Vector3[] _nodeLift = [], _nodeDrag = [], _nodeParasiticDrag = [], _stripLift = [], _stripDrag = [];
+    private float _recordShare;
+
+    /// <summary>
+    /// Gets or sets whether each step records the aerodynamic forces where they act (<see cref="NodeLift"/>,
+    /// <see cref="NodeDrag"/>, <see cref="NodeParasiticDrag"/>, <see cref="StripLift"/>, <see cref="StripDrag"/>),
+    /// averaged over its substeps, to visualize them. Off by default.
+    /// </summary>
+    public bool RecordForces { get; set; }
+
+    /// <summary>Gets the canopy lift on each node in the last recorded step (N; empty until a step recorded it).</summary>
+    public ReadOnlySpan<Vector3> NodeLift => _nodeLift;
+
+    /// <summary>Gets the canopy drag (profile, induced, brake flap, deflated cells) on each node in the last recorded step (N).</summary>
+    public ReadOnlySpan<Vector3> NodeDrag => _nodeDrag;
+
+    /// <summary>Gets the drag of the lines, risers and the pilot on each node in the last recorded step (N).</summary>
+    public ReadOnlySpan<Vector3> NodeParasiticDrag => _nodeParasiticDrag;
+
+    /// <summary>
+    /// Gets each strip's lift in the last recorded step (N): the sum of its share on the nodes, acting at its center of
+    /// pressure (<see cref="StripCenterOfPressure"/>).
+    /// </summary>
+    public ReadOnlySpan<Vector3> StripLift => _stripLift;
+
+    /// <summary>Gets each strip's canopy drag in the last recorded step (N), acting where its lift does.</summary>
+    public ReadOnlySpan<Vector3> StripDrag => _stripDrag;
+
+    /// <summary>
+    /// Gets where strip <paramref name="strip"/>'s lift and drag act: the chord fraction (from the leading edge) its load
+    /// is centered on, between its two sections.
+    /// </summary>
+    public float StripCenterOfPressure(int strip) => _strips[strip].CenterOfPressure;
+
     /// <summary>Gets the canopy drag of the last substep by term (N, sums of magnitudes) and the sum of the strips' lift magnitudes (diagnostics).</summary>
     public (float Profile, float Induced, float Flap, float Deflated, float LiftSum) CanopyDragTerms => _dragTerms;
 
@@ -366,8 +440,17 @@ public sealed class GliderSimulator
     /// <summary>Gets the angle of attack (degrees) of strip <paramref name="strip"/> in the last substep.</summary>
     public float StripAngleOfAttack(int strip) => _strips[strip].Alpha;
 
+    /// <summary>Gets how far strip <paramref name="strip"/>'s trailing edge is deflected (degrees, down positive; the brakes) in the last substep.</summary>
+    public float StripFlapAngle(int strip) => _strips[strip].Flap;
+
     /// <summary>Gets the angle of attack (degrees) of strip <paramref name="strip"/>'s inlet: of the nose, which differs when it is folded.</summary>
     public float StripInletAngle(int strip) => _strips[strip].InletAlpha;
+
+    /// <summary>
+    /// Gets the angle (degrees) between the direction strip <paramref name="strip"/>'s inlet faces and the oncoming flow
+    /// in the last substep: 0 when the flow meets it head on, 90 when it passes across it, 180 from behind.
+    /// </summary>
+    public float StripInletFacing(int strip) => _strips[strip].InletFacing;
 
     /// <summary>
     /// Gets how many chord stations had the upper skin below the lower one (across the local fabric) in the last substep,
@@ -390,9 +473,30 @@ public sealed class GliderSimulator
             _velocities[i] = velocity;
         }
         Array.Fill(_pressure, 1f);
+        PilotLoad = Gravity * MathF.Max(0, _model.Nodes[_model.Pilot].Mass);
+        LoadFactor = 1;
+        foreach (var strip in _strips) strip.Airspeed = 0;
         Origin = default;
         _brakeLeft = _brakeRight = _speedBar = _collapseLeft = _collapseRight = _frontal = _bigEars = _weightShift = 0;
         Time = 0;
+    }
+
+    // The pilot's load from the velocity change over the step (smoothed: the constrained pilot node jitters).
+    private void UpdateLoad(Vector3 pilotVelocity, float dt)
+    {
+        float mass = MathF.Max(0, _model.Nodes[_model.Pilot].Mass);
+        if (mass <= 0) return;
+        var acceleration = (_velocities[_model.Pilot] - pilotVelocity) / dt;
+        PilotLoad += ((Gravity - acceleration) * mass - PilotLoad) * MathF.Min(1, dt / 0.3f);
+        LoadFactor = PilotLoad.Length() / (mass * Gravity.Length());
+    }
+
+    // The substeps for the next step: more as the load grows.
+    private int SubstepCount()
+    {
+        int substeps = Math.Max(1, _settings.Substeps);
+        if (!_settings.SubstepsFollowLoad || LoadFactor <= 1) return substeps;
+        return Math.Min(substeps * 4, (int)MathF.Ceiling(substeps * LoadFactor));
     }
 
     /// <summary>Advances the simulation by <paramref name="dt"/> seconds (one step; call with a fixed step for stable results).</summary>
@@ -401,9 +505,12 @@ public sealed class GliderSimulator
         if (dt <= 0) return;
         ApplyControls(dt);
 
-        int substeps = Math.Max(1, _settings.Substeps);
+        var pilotVelocity = _velocities[_model.Pilot];
+        int substeps = SubstepCount();
         float h = dt / substeps;
         float damping = MathF.Max(0, 1 - _settings.Damping * h);
+        _recordShare = RecordForces ? 1f / substeps : 0;
+        if (RecordForces) ClearRecordedForces();
         for (int s = 0; s < substeps; s++)
         {
             // Forces every substep: the aerodynamic damping of the light canopy nodes is too stiff for a frame-long step.
@@ -449,6 +556,7 @@ public sealed class GliderSimulator
                 };
             }
         }
+        UpdateLoad(pilotVelocity, dt);
         Time += dt;
         Rebase();
     }
@@ -745,6 +853,24 @@ public sealed class GliderSimulator
         }
     }
 
+    private void ClearRecordedForces()
+    {
+        if (_nodeLift.Length != _count)
+        {
+            _nodeLift = new Vector3[_count];
+            _nodeDrag = new Vector3[_count];
+            _nodeParasiticDrag = new Vector3[_count];
+            _stripLift = new Vector3[_strips.Length];
+            _stripDrag = new Vector3[_strips.Length];
+            return;
+        }
+        Array.Clear(_nodeLift);
+        Array.Clear(_nodeDrag);
+        Array.Clear(_nodeParasiticDrag);
+        Array.Clear(_stripLift);
+        Array.Clear(_stripDrag);
+    }
+
     private void ComputeForces(float dt)
     {
         float rho = _settings.AirDensity;
@@ -770,12 +896,18 @@ public sealed class GliderSimulator
             _lineDrag += force;
             _forces[a] += force * 0.5f;
             _forces[b] += force * 0.5f;
+            if (_recordShare > 0)
+            {
+                _nodeParasiticDrag[a] += force * (0.5f * _recordShare);
+                _nodeParasiticDrag[b] += force * (0.5f * _recordShare);
+            }
         }
 
         // The pilot.
         var pilotAir = wind - _velocities[_model.Pilot];
-        _forces[_model.Pilot] += pilotAir * (0.5f * rho * pilotAir.Length() * _model.PilotDragArea);
         _pilotDrag = pilotAir * (0.5f * rho * pilotAir.Length() * _model.PilotDragArea);
+        _forces[_model.Pilot] += _pilotDrag;
+        if (_recordShare > 0) _nodeParasiticDrag[_model.Pilot] += _pilotDrag * _recordShare;
 
         float aspect = MathF.Max(1, _model.InducedAspectRatio > 0 ? _model.InducedAspectRatio : _model.ProjectedAspectRatio);
         if (_settings.Aerodynamics) for (int s = 0; s < _strips.Length; s++) ApplyStripAerodynamics(_strips[s], rho, wind, aspect);
@@ -820,12 +952,18 @@ public sealed class GliderSimulator
         if (speed < 0.1f) return;
         var flowDir = flow / speed;
 
-        float alpha = MathF.Atan2(Vector3.Dot(flow, up), Vector3.Dot(flow, chordDir));
-        float alphaDegrees = alpha * 180 / MathF.PI;
-        // A trailing edge pulled down (brakes) acts like a plain flap: more lift while the flow is attached, more drag,
-        // and the center of pressure moves back. (The chord from nose to tail already turns with the trailing edge.)
+        float chordAlphaDegrees = MathF.Atan2(Vector3.Dot(flow, up), Vector3.Dot(flow, chordDir)) * 180 / MathF.PI;
+        // A trailing edge pulled down (brakes) acts like a plain flap: more lift while the flow is attached, an earlier
+        // stall, more drag, and the center of pressure moves back. It turns the chord from nose to tail but not the front
+        // of the profile, so the angle of attack is measured against the front (the leading edge to mid chord): the
+        // deflection counts once, through the flap terms, not also as angle of attack.
         var mid = (p[strip.MidA] + p[strip.MidB]) * 0.5f;
         float flap = FlapAngle(le, mid, te, chordDir, up) - strip.RestFlap;
+        var front = mid - le;
+        float frontAngle = MathF.Atan2(Vector3.Dot(front, up), Vector3.Dot(front, chordDir));
+        float alphaDegrees = chordAlphaDegrees - (frontAngle - strip.RestFrontAngle) * 180 / MathF.PI;
+        // Part of the deflection acts like angle of attack (moving the stall earlier), the rest is camber lift.
+        float stallShift = _settings.FlapStallShift * flap * 180 / MathF.PI;
 
         // Lifting line: the induced angle follows from the lift it leaves, αi = Cl(α − αi) / (π·AR·e). A few damped
         // fixed-point iterations (one step from Cl(α) would overestimate the induced drag by half).
@@ -834,27 +972,35 @@ public sealed class GliderSimulator
         double flapLift = 0;
         for (int iteration = 0; iteration < 4; iteration++)
         {
-            double effective = alphaDegrees - induced * 180 / MathF.PI;
+            double effective = alphaDegrees - induced * 180 / MathF.PI + stallShift;
             var (clIteration, _, _) = Polar(effective);
             flapLift = FlapLift(effective, flap);
             induced = 0.5f * induced + 0.5f * (float)((clIteration + flapLift) * inducedFactor);
         }
-        var (cl, cd, cm) = Polar(alphaDegrees - induced * 180 / MathF.PI);
+        var (cl, cd, cm) = Polar(alphaDegrees - induced * 180 / MathF.PI + stallShift);
         double profileCd = cd;
         cl += flapLift;
+        // The flap's lift acts at about 0.32 chord (thin airfoil theory for a flap of the rear 38%: a camber change moves the
+        // circulation over the whole profile), a little behind the quarter chord.
+        cm -= 0.07 * flapLift;
         // A deflated cell is a crumpled bag, not an airfoil: it loses most of its lift and drags more.
         double inflation = Math.Clamp(_pressure[strip.Index], 0, 1);
         cl *= 0.25 + 0.75 * inflation;
         cd += _settings.DeflatedDrag * (1 - inflation);
-        cm -= 0.3 * flapLift;
-        cd += 0.6 * flap * flap + cl * induced;
+        cd += _settings.FlapDrag * flap * flap + cl * induced;
         strip.Alpha = alphaDegrees;
+        strip.Flap = flap * 180 / MathF.PI;
         // The inlet faces along the nose (from the throat behind the inlet to the leading edge): a nose folded down or
         // under closes it even when the rest of the cell still looks like a profile.
         var throat = (p[strip.ThroatUpperA] + p[strip.ThroatLowerA] + p[strip.ThroatUpperB] + p[strip.ThroatLowerB]) * 0.25f;
         var noseAxis = throat - le;
         float noseAngle = MathF.Atan2(Vector3.Dot(noseAxis, up), Vector3.Dot(noseAxis, chordDir));
-        strip.InletAlpha = alphaDegrees - (noseAngle - strip.RestNoseAngle) * 180 / MathF.PI;
+        strip.InletAlpha = chordAlphaDegrees - (noseAngle - strip.RestNoseAngle) * 180 / MathF.PI;
+        // Where the inlet faces: into the trim flow at rest, turning with the nose. The angle to the oncoming flow is in
+        // 3D, so flow along the span (a folded tip, sideslip) passes the inlet by instead of ramming into it.
+        float turned = (strip.InletAlpha - strip.RestAlpha) * MathF.PI / 180;
+        float inPlane = speed / MathF.Max(air.Length(), 1e-3f);
+        strip.InletFacing = MathF.Acos(Math.Clamp(MathF.Cos(turned) * inPlane, -1, 1)) * 180 / MathF.PI;
         // A flattened nose (a crumpled cell) closes the inlet: it opens again as the flow lifts the lips apart.
         if (strip.RestThroatHeight > 0)
         {
@@ -870,12 +1016,15 @@ public sealed class GliderSimulator
 
         float q = 0.5f * rho * speed * speed;
         float area = chordLength * spanLength;
-        var force = (liftDir * (float)cl + flowDir * (float)cd) * (q * area);
+        // The flap's drag acts on the deflected rear of the profile (behind the mid station), the rest around the center of
+        // pressure.
+        var flapForce = flowDir * (float)(_settings.FlapDrag * flap * flap * q * area);
+        var force = (liftDir * (float)cl + flowDir * (float)cd) * (q * area) - flapForce;
         _canopyLift += liftDir * (float)(cl * q * area);
         _canopyDrag += flowDir * (float)(cd * q * area);
         _dragTerms.Profile += (float)(profileCd * q * area);
         _dragTerms.Induced += (float)(cl * induced * q * area);
-        _dragTerms.Flap += 0.6f * flap * flap * q * area;
+        _dragTerms.Flap += _settings.FlapDrag * flap * flap * q * area;
         _dragTerms.Deflated += (float)(_settings.DeflatedDrag * (1 - inflation) * q * area);
         _dragTerms.LiftSum += (float)(Math.Abs(cl) * q * area);
 
@@ -894,7 +1043,25 @@ public sealed class GliderSimulator
             _forces[strip.TeB] += couple;
             AeroPower -= moment * pitchRate;
         }
-        for (int k = 0; k < weights.Length; k++) { _forces[strip.Nodes[k]] += force * weights[k]; AeroPower += Vector3.Dot(force * weights[k], _velocities[strip.Nodes[k]] - wind); }
+        for (int k = 0; k < weights.Length; k++)
+        {
+            var nodeForce = force * weights[k] + flapForce * strip.RearWeight[k];
+            _forces[strip.Nodes[k]] += nodeForce;
+            AeroPower += Vector3.Dot(nodeForce, _velocities[strip.Nodes[k]] - wind);
+        }
+        if (_recordShare > 0)
+        {
+            var flapDragForce = flapForce * _recordShare;
+            var lift = liftDir * (float)(cl * q * area * _recordShare);
+            var drag = flowDir * (float)(cd * q * area * _recordShare) - flapDragForce;
+            _stripLift[strip.Index] += lift;
+            _stripDrag[strip.Index] += drag + flapDragForce;
+            for (int k = 0; k < weights.Length; k++)
+            {
+                _nodeLift[strip.Nodes[k]] += lift * weights[k];
+                _nodeDrag[strip.Nodes[k]] += drag * weights[k] + flapDragForce * strip.RearWeight[k];
+            }
+        }
 
         // The center of pressure for the next substep, from the moment coefficient.
         float cp = Math.Abs(cl) > 0.05 ? (float)Math.Clamp(0.25 - cm / cl, 0.05, 0.9) : 0.4f;
@@ -940,7 +1107,7 @@ public sealed class GliderSimulator
             float target;
             if (strip.HasInlet)
             {
-                float ram = strip.Airspeed > 2 ? InletPressure(strip.InletAlpha) : 0;
+                float ram = strip.Airspeed > 2 ? InletPressure(strip.InletAlpha, strip.InletFacing) : 0;
                 // Pulled A lines fold the leading edge under and close the inlets.
                 if (_closure[s] > 0) ram += (-0.25f - ram) * _closure[s];
                 target = ram > 0 ? ram * strip.InletOpen : ram;
@@ -969,25 +1136,33 @@ public sealed class GliderSimulator
     }
 
     /// <summary>
-    /// The pressure an inlet takes in at an angle of attack (fraction of the full internal pressure): full while the flow
-    /// meets the inlet from the front and below; it closes as the flow comes over the nose (below
-    /// <see cref="ProxyModel.InletClosingAlpha"/>, the cells are sucked empty), and with the flow from below a stalled wing
-    /// keeps only part of its pressure; from behind it empties.
+    /// The pressure an inlet takes in (fraction of the full internal pressure), from the inlet's angle of attack
+    /// <paramref name="alpha"/> (degrees, see <see cref="StripInletAngle"/>) and the angle between the direction it faces
+    /// and the oncoming flow <paramref name="facing"/> (degrees, see <see cref="StripInletFacing"/>).
     /// </summary>
-    public float InletPressure(float alpha)
+    /// <remarks>
+    /// Full while the flow meets the inlet within <see cref="SimulatorSettings.InletCaptureAngle"/> of where it faces;
+    /// falling off (cos²) to nothing when the flow passes across it (90°); sucking the cell empty (−0.25) when the flow
+    /// comes from behind (120° on). A deeply stalled wing, the flow from below, keeps its pressure while the flow still
+    /// meets the inlets from the front; in a full stall, the wing back and the flow from below and behind, it empties.
+    /// The flow coming over the nose closes the inlet whatever the angle (below <see cref="ProxyModel.InletClosingAlpha"/>:
+    /// the stagnation point moves above the inlet).
+    /// </remarks>
+    public float InletPressure(float alpha, float facing)
     {
-        float closing = _model.InletClosingAlpha;
-        float stalled = _settings.StalledInletPressure;
-        return alpha switch
+        float capture = Math.Clamp(_settings.InletCaptureAngle, 0, 89);
+        float ram = facing switch
         {
-            _ when alpha <= closing - 3 => -0.25f,
-            _ when alpha < closing => -0.25f + 1.25f * (alpha - (closing - 3)) / 3,
-            <= 35 => 1,
-            <= 60 => 1 - (1 - stalled) * (alpha - 35) / 25,
-            <= 110 => stalled,
-            <= 150 => stalled - (stalled + 0.25f) * (alpha - 110) / 40,
+            _ when facing <= capture => 1,
+            < 90 => MathF.Pow(MathF.Cos((facing - capture) / (90 - capture) * MathF.PI / 2), 2),
+            < 120 => -0.25f * (facing - 90) / 30,
             _ => -0.25f,
         };
+        float closing = _model.InletClosingAlpha;
+        alpha = ((alpha + 180) % 360 + 360) % 360 - 180;
+        if (alpha <= closing - 3) return -0.25f;
+        if (alpha < closing) return -0.25f + (ram + 0.25f) * (alpha - (closing - 3)) / 3;
+        return ram;
     }
 
     private void ApplyPressure(StripData strip, float pressure, float rho)
@@ -1061,6 +1236,14 @@ public sealed class GliderSimulator
             Nodes = nodes.ToArray(), X = xs.ToArray(), BaseWeight = weights.ToArray(),
             Surface = strip.Surface.ToArray(), HasInlet = strip.HasInlet,
         };
+        // Where the flap's airload goes: the nodes behind the mid station, by their share of the area.
+        float hinge = _model.Nodes[data.MidA].Chord;
+        data.RearWeight = data.X.Select((x, k) => x > hinge + 1e-4f ? data.BaseWeight[k] : 0).ToArray();
+        float rearSum = data.RearWeight.Sum();
+        if (rearSum <= 0) data.RearWeight = data.BaseWeight.ToArray();
+        rearSum = data.RearWeight.Sum();
+        for (int k = 0; k < data.RearWeight.Length; k++) data.RearWeight[k] /= rearSum;
+
         // The rest flap angle (the profile's own camber line kink).
         var p = _model.Nodes;
         var le = (p[data.LeA].Position + p[data.LeB].Position) * 0.5f;
@@ -1074,6 +1257,22 @@ public sealed class GliderSimulator
         var restThroat = (p[data.ThroatUpperA].Position + p[data.ThroatLowerA].Position + p[data.ThroatUpperB].Position + p[data.ThroatLowerB].Position) * 0.25f - le;
         data.RestNoseAngle = MathF.Atan2(Vector3.Dot(restThroat, Vector3.Cross(spanDir, chordDir)), Vector3.Dot(restThroat, chordDir));
         if (a.Upper.Count > 0) data.RestThroatHeight = 0.5f * (Vector3.Distance(p[data.ThroatUpperA].Position, p[data.ThroatLowerA].Position) + Vector3.Distance(p[data.ThroatUpperB].Position, p[data.ThroatLowerB].Position));
+        // The front of the profile against its chord at rest, in the frame the aerodynamics use (the span between the
+        // quarter chords), so the angle of attack against the front equals the chord's at rest.
+        {
+            Vector3 P(int node) => p[node].Position;
+            var quarterSpan = Vector3.Normalize(P(data.LeB) + (P(data.TeB) - P(data.LeB)) * 0.25f - (P(data.LeA) + (P(data.TeA) - P(data.LeA)) * 0.25f));
+            var chordVector = (P(data.TeA) + P(data.TeB) - P(data.LeA) - P(data.LeB)) * 0.5f;
+            var inPlane = Vector3.Normalize(chordVector - quarterSpan * Vector3.Dot(chordVector, quarterSpan));
+            var normal = Vector3.Cross(quarterSpan, inPlane);
+            var restFront = (P(data.MidA) + P(data.MidB) - P(data.LeA) - P(data.LeB)) * 0.5f;
+            data.RestFrontAngle = MathF.Atan2(Vector3.Dot(restFront, normal), Vector3.Dot(restFront, inPlane));
+        }
+        // The angle of attack in the trim glide, the flow the inlet is cut to face.
+        float gamma = _model.TrimFlightPathAngle * MathF.PI / 180;
+        var trimAir = -new Vector3(0, -MathF.Sin(gamma), MathF.Cos(gamma));
+        var trimFlow = trimAir - spanDir * Vector3.Dot(trimAir, spanDir);
+        data.RestAlpha = MathF.Atan2(Vector3.Dot(trimFlow, Vector3.Cross(spanDir, chordDir)), Vector3.Dot(trimFlow, chordDir)) * 180 / MathF.PI;
         return data;
     }
 

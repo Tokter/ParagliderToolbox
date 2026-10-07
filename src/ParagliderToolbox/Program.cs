@@ -37,7 +37,8 @@ internal static class Program
             height: 900,
             isTitleLess: true,
             isTransparent: true,
-            windowOpacity: 1.0f);
+            windowOpacity: 1.0f,
+            iconPath: "ParagliderToolbox.png");
 
         // A factory lambda enables hot reload: the view is rebuilt from the same state.
         window.SetContent(() => new MainView(shell));

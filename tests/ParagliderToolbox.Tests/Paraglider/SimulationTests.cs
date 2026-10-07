@@ -49,8 +49,9 @@ public class SimulationTests
         Average(sim, 10);
         var (trimSpeed, _) = Average(sim, 4);
 
-        sim.Inputs.BrakeLeft = sim.Inputs.BrakeRight = 0.4f;
-        Average(sim, 6);
+        // Half brakes, well short of the stall (about 80 % of the travel).
+        sim.Inputs.BrakeLeft = sim.Inputs.BrakeRight = 0.5f;
+        Average(sim, 12); // past the zoom: slowing down, it climbs for a while
         var (brakedSpeed, brakedSink) = Average(sim, 4);
         Assert.True(brakedSpeed < trimSpeed - 1.5f, $"{brakedSpeed} vs {trimSpeed}");
         Assert.InRange(brakedSink, 0.5f, 2.0f);
@@ -224,8 +225,9 @@ public class SimulationTests
             sim.Step(1 / 60f);
             narrowest = Math.Min(narrowest, CanopyWidth(sim));
         }
-        // A fabric wing folds along the span (the tips come forward and together), not just pitches like a rigid one.
-        Assert.True(narrowest < width * 0.75f, $"narrowest {narrowest} of {width}");
+        // A fabric wing folds along the span (the tips come forward and together), not just pitches like a rigid one. (The
+        // outer sections, lifting up to their stall at about 18°, hold the tips out a little through the fold.)
+        Assert.True(narrowest < width * 0.8f, $"narrowest {narrowest} of {width}");
     }
 
     [Fact]
@@ -235,7 +237,9 @@ public class SimulationTests
         Average(sim, 10);
         Ramp(sim, b => sim.Inputs.BrakeLeft = sim.Inputs.BrakeRight = b);
         Average(sim, 5);
-        Assert.True(sim.CellPressure.ToArray().Average() < 0.6f, "the stalled cells lose pressure");
+        // The wing is back and the flow comes from below and behind, across the inlets: the cells lose most of their air.
+        Assert.True(sim.CellPressure.ToArray().Average() < 0.2f, "the stalled cells lose pressure");
+        Assert.True(Enumerable.Range(0, sim.Model.Strips.Count).Where(s => sim.Model.Strips[s].HasInlet).Average(s => sim.StripInletFacing(s)) > 60);
 
         Ramp(sim, b => sim.Inputs.BrakeLeft = sim.Inputs.BrakeRight = 1 - b);
         Average(sim, 10);
@@ -302,6 +306,36 @@ public class SimulationTests
         Assert.True(turned < 20, $"turned {turned}°");
     }
 
+    public static TheoryData<WingClass> Classes() => [.. GliderPresets.Classes];
+
+    [Theory]
+    [MemberData(nameof(Classes))]
+    public void EveryClass_FliesThroughMostOfItsBrakeTravel_AndStallsBeforeItsEnd(WingClass wingClass)
+    {
+        // Calibrated to stall at about 80 % of the travel (EN-A 64 cm … EN-D 48 cm), past the certification minimums. A wing
+        // that stalled early (the brakes pitching a rigid profile up instead of curling the trailing edge) spun at 60 %.
+        var design = GliderPresets.Create(wingClass, MeshDetail.LowPoly);
+        design.ProxyComplexity = ProxyComplexity.Medium;
+        var sim = new GliderSimulator(GliderGenerator.Generate(design, new GenerateOptions(-1)).Proxy.Model);
+        Average(sim, 8);
+        float maxAoa = 0, maxSink = 0;
+        void Fly(float from, float to, float seconds)
+        {
+            for (int i = 0; i < seconds * 60; i++)
+            {
+                sim.Inputs.BrakeLeft = sim.Inputs.BrakeRight = from + (to - from) * Math.Min(1, i / (seconds * 30));
+                sim.Step(1 / 60f);
+                maxAoa = MathF.Max(maxAoa, sim.CenterAngleOfAttack);
+                maxSink = MathF.Max(maxSink, -sim.VerticalSpeed);
+            }
+        }
+        Fly(0, 0.5f, 12);
+        Fly(0.5f, 0.7f, 16);
+        Assert.True(maxAoa < 22 && maxSink < 3, $"{wingClass} stalled before 70 %: aoa {maxAoa:0}°, sink {maxSink:0.0} m/s");
+        Fly(0.7f, 1, 12);
+        Assert.True(maxAoa > 22 || maxSink > 3.5f, $"{wingClass} didn't stall: aoa {maxAoa:0}°, sink {maxSink:0.0} m/s");
+    }
+
     [Fact]
     public void DefaultWing_FliesTheEnBReferencePolar()
     {
@@ -319,6 +353,101 @@ public class SimulationTests
         Assert.InRange(trimSpeed / trimSink, 7.8f, 10);
         Assert.InRange(topSpeed * 3.6f, 45, 52);
         Assert.InRange(topSink, 1.6f, 2.3f);
+    }
+
+    [Fact]
+    public void HeldBrake_WindsIntoASpiralDive_AndThePilotLoadPointsOutOfTheTurn()
+    {
+        // At a fixed 16 substeps the loaded wing snapped its outer tip once the spiral pulled about 2 G, and it flipped
+        // into a reversal or a spin. Into the turn with brake and weight shift, as a pilot enters a spiral (more brake alone
+        // stalls the slow inner wing into a spinning spiral).
+        var sim = Simulator();
+        Average(sim, 10);
+        Ramp(sim, b =>
+        {
+            sim.Inputs.BrakeLeft = 0.6f * b;
+            sim.Inputs.WeightShift = 0.5f * b;
+        });
+        Average(sim, 16);
+        float minLoad = float.MaxValue, minSink = float.MaxValue;
+        for (int i = 0; i < 10 * 60; i++)
+        {
+            var before = sim.PilotVelocity;
+            sim.Step(1 / 60f);
+            var v = sim.PilotVelocity;
+            // Turning left: the velocity keeps turning to the pilot's left (+X of the flight direction).
+            var left = new Vector3(before.Z, 0, -before.X);
+            Assert.True(Vector3.Dot(v - before, left) > 0, $"the turn reversed at {sim.Time:0.0} s");
+            Assert.True(Vector3.Dot(sim.PilotLoad, left) < 0, "the load points out of the turn");
+            minLoad = MathF.Min(minLoad, sim.LoadFactor);
+            minSink = MathF.Min(minSink, -v.Y);
+        }
+        Assert.True(minLoad > 2.5f, $"{minLoad:0.0} G");
+        Assert.True(minSink > 10, $"{minSink:0.0} m/s");
+    }
+
+    [Fact]
+    public void InletPressure_FollowsHowTheInletFacesTheFlow()
+    {
+        var sim = Simulator();
+        float closing = sim.Model.InletClosingAlpha;
+        Assert.Equal(1, sim.InletPressure(8, 0));
+        Assert.Equal(1, sim.InletPressure(8, 30)); // within the capture cone
+        Assert.Equal(0.5f, sim.InletPressure(8, 60), 3);
+        Assert.Equal(0, sim.InletPressure(8, 90), 3); // the flow passes across the inlet
+        Assert.Equal(-0.25f, sim.InletPressure(8, 150)); // from behind: sucked empty
+        Assert.Equal(-0.25f, sim.InletPressure(closing - 4, 10)); // the flow over the nose closes it however it faces
+
+        // In trim every inlet takes in the flow (the tips, arced and twisted in flight, face it least squarely).
+        Average(sim, 10);
+        Assert.All(Enumerable.Range(0, sim.Model.Strips.Count).Where(s => sim.Model.Strips[s].HasInlet), s => Assert.InRange(sim.StripInletFacing(s), 0, 25));
+    }
+
+    [Fact]
+    public void RecordedForces_CarryTheWeight_InASteadyGlide()
+    {
+        var sim = Simulator();
+        sim.RecordForces = true;
+        Average(sim, 10);
+
+        Vector3 Sum(ReadOnlySpan<Vector3> forces)
+        {
+            var sum = Vector3.Zero;
+            foreach (var force in forces) sum += force;
+            return sum;
+        }
+        var total = Vector3.Zero;
+        var stripLift = Vector3.Zero;
+        var nodeLift = Vector3.Zero;
+        const int steps = 120;
+        for (int i = 0; i < steps; i++)
+        {
+            sim.Step(1 / 60f);
+            total += (Sum(sim.NodeLift) + Sum(sim.NodeDrag) + Sum(sim.NodeParasiticDrag)) / steps;
+            stripLift += Sum(sim.StripLift) / steps;
+            nodeLift += Sum(sim.NodeLift) / steps;
+        }
+
+        float weight = sim.Model.Nodes.Sum(n => n.Mass) * 9.81f;
+        Assert.InRange(total.Y / weight, 0.95f, 1.05f);
+        Assert.True(MathF.Sqrt(total.X * total.X + total.Z * total.Z) < 0.05f * weight, $"{total}");
+        Assert.True(Vector3.Distance(stripLift, nodeLift) < 1e-3f * weight, $"{stripLift} vs {nodeLift}");
+        Assert.All(Enumerable.Range(0, sim.Model.Strips.Count), s => Assert.InRange(sim.StripCenterOfPressure(s), 0.05f, 0.9f));
+    }
+
+    [Fact]
+    public void RecordingForces_DoesNotChangeTheFlight()
+    {
+        var plain = Simulator();
+        var recording = Simulator();
+        recording.RecordForces = true;
+        for (int i = 0; i < 120; i++)
+        {
+            plain.Step(1 / 60f);
+            recording.Step(1 / 60f);
+        }
+        Assert.Equal(plain.Positions.ToArray(), recording.Positions.ToArray());
+        Assert.Equal(0, plain.NodeLift.Length);
     }
 
     [Fact]
