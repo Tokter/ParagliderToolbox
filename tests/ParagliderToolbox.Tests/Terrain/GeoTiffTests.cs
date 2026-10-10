@@ -109,6 +109,24 @@ public class GeoTiffTests
     }
 
     [Fact]
+    public async Task BlockIndexesBeyondTheHeader_AreReadWhenTheirImageIs()
+    {
+        var full = new TestImage(64, 64, 16, 16, 32, 3, 1, 8, 3, (tx, ty) => FloatTile(tx, ty, 16, 16, 64, 64));
+        var half = full with { Width = 32, Height = 32 };
+        var file = TestTiff.Create([full, half], 0, 64, 1, 2056);
+        // A header so short that every block index lies beyond it, as a large file's full resolution does.
+        var tiff = await GeoTiff.OpenAsync(new MemoryRangeReader(file), 64, default);
+        Assert.False(tiff.Images[0].IsIndexLoaded);
+
+        await tiff.ReadElevationBlockAsync(1, 1, 1);
+        Assert.True(tiff.Images[1].IsIndexLoaded);
+        Assert.False(tiff.Images[0].IsIndexLoaded);
+
+        var block = await tiff.ReadElevationBlockAsync(0, 3, 2);
+        Assert.Equal(Height(3 * 16 + 5, 2 * 16 + 7), block[7 * 16 + 5]);
+    }
+
+    [Fact]
     public void Lzw_DecodesWhatTiffEncodes_AcrossCodeWidths()
     {
         var random = new Random(7);

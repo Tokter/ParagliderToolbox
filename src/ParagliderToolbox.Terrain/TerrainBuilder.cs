@@ -7,15 +7,36 @@ using SkiaSharp;
 
 namespace ParagliderToolbox.Terrain;
 
-/// <summary>How far a terrain build is.</summary>
+/// <summary>How far a terrain build is: reported when a tile is built, and every <see cref="TerrainBuilder.ProgressInterval"/> in between.</summary>
 /// <param name="TilesDone">The tiles built.</param>
 /// <param name="TileCount">The tiles to build.</param>
 /// <param name="BytesDownloaded">The bytes downloaded so far.</param>
-/// <param name="Tile">The tile just built, or <c>null</c>.</param>
+/// <param name="Tile">The tile just built, or <c>null</c> for a report in between.</param>
 public readonly record struct TerrainProgress(int TilesDone, int TileCount, long BytesDownloaded, TerrainTile? Tile)
 {
     /// <summary>Gets the fraction done (0–1).</summary>
     public double Fraction => TileCount == 0 ? 1 : (double)TilesDone / TileCount;
+
+    /// <summary>Gets the requests made so far (each a file's part or a catalog page; cached data needs none).</summary>
+    public int Requests { get; init; }
+
+    /// <summary>Gets the level of detail being built (0 the finest).</summary>
+    public int Level { get; init; }
+
+    /// <summary>Gets the number of levels.</summary>
+    public int LevelCount { get; init; }
+
+    /// <summary>Gets the tiles of <see cref="Level"/> built.</summary>
+    public int LevelTilesDone { get; init; }
+
+    /// <summary>Gets the tiles of <see cref="Level"/>.</summary>
+    public int LevelTileCount { get; init; }
+
+    /// <summary>Gets the side of a whole tile of <see cref="Level"/> (m).</summary>
+    public double LevelTileSize { get; init; }
+
+    /// <summary>Gets how long the build has run.</summary>
+    public TimeSpan Elapsed { get; init; }
 }
 
 /// <summary>
@@ -44,23 +65,49 @@ public sealed class TerrainBuilder(TerrainSources sources)
     /// </summary>
     public double BlendDistance { get; init; } = 200;
 
+    /// <summary>
+    /// Gets or sets how often progress is reported while tiles are still building (the first, coarsest tile of a large
+    /// terrain reads a little of every file and can take a while with an empty cache).
+    /// </summary>
+    public TimeSpan ProgressInterval { get; init; } = TimeSpan.FromSeconds(0.5);
+
     /// <summary>Builds the terrain of <paramref name="settings"/>.</summary>
     /// <exception cref="HttpRequestException">Data couldn't be downloaded (and isn't cached).</exception>
     public async Task<TerrainModel> BuildAsync(TerrainSettings settings, IProgress<TerrainProgress>? progress = null, CancellationToken cancellationToken = default)
     {
         var clock = Stopwatch.StartNew();
         long downloadedBefore = sources.Cache?.BytesDownloaded ?? 0;
+        int requestsBefore = sources.Cache?.RequestCount ?? 0;
         var layout = new TerrainLayout(settings);
         var frame = new LocalFrame(settings.Center);
         var tiles = new ConcurrentDictionary<TileKey, TerrainTile>();
         var elevationCounts = new ConcurrentDictionary<string, long>();
         var imageryCounts = new ConcurrentDictionary<string, long>();
         long heightSamples = 0, missing = 0, texels = 0;
-        int done = 0;
+        int done = 0, levelDone = 0, levelCount = 0, currentLevel = layout.LevelCount - 1;
+
+        TerrainProgress Snapshot(TerrainTile? tile) => new(Volatile.Read(ref done), layout.Tiles.Count,
+            (sources.Cache?.BytesDownloaded ?? 0) - downloadedBefore, tile)
+        {
+            Requests = (sources.Cache?.RequestCount ?? 0) - requestsBefore,
+            Level = Volatile.Read(ref currentLevel),
+            LevelCount = layout.LevelCount,
+            LevelTilesDone = Volatile.Read(ref levelDone),
+            LevelTileCount = Volatile.Read(ref levelCount),
+            LevelTileSize = layout.TileSizeAt(Volatile.Read(ref currentLevel)),
+            Elapsed = clock.Elapsed,
+        };
+
+        // Reports in between, so a long tile doesn't look like a hang.
+        using var heartbeat = progress is null ? null : new Timer(_ => progress.Report(Snapshot(null)), null, ProgressInterval, ProgressInterval);
 
         // Level by level from the coarsest, so a preview fills in from coarse to fine.
         foreach (var level in layout.Tiles.GroupBy(k => k.Level).OrderByDescending(g => g.Key))
         {
+            Volatile.Write(ref levelDone, 0);
+            Volatile.Write(ref levelCount, level.Count());
+            Volatile.Write(ref currentLevel, level.Key);
+            progress?.Report(Snapshot(null));
             await Parallel.ForEachAsync(level, new ParallelOptions { MaxDegreeOfParallelism = Math.Max(1, Parallelism), CancellationToken = cancellationToken },
                 async (key, token) =>
                 {
@@ -71,8 +118,9 @@ public sealed class TerrainBuilder(TerrainSources sources)
                     Interlocked.Add(ref heightSamples, counts.Samples);
                     Interlocked.Add(ref missing, counts.Missing);
                     Interlocked.Add(ref texels, counts.Texels);
-                    int finished = Interlocked.Increment(ref done);
-                    progress?.Report(new TerrainProgress(finished, layout.Tiles.Count, (sources.Cache?.BytesDownloaded ?? 0) - downloadedBefore, tile));
+                    Interlocked.Increment(ref done);
+                    Interlocked.Increment(ref levelDone);
+                    progress?.Report(Snapshot(tile));
                 });
         }
 
@@ -97,39 +145,23 @@ public sealed class TerrainBuilder(TerrainSources sources)
         TileKey key, CancellationToken cancellationToken)
     {
         var rect = layout.Rect(key);
-        double s = rect.Spacing;
-        var request = new SampleRequest(frame, rect.X0 - s, rect.Z0 - s, s, rect.Columns + 2, rect.Rows + 2);
-        var heights = new float[request.Count];
-        Array.Fill(heights, float.NaN);
-        var elevationCounts = new Dictionary<string, long>();
-        var order = sources.ElevationFor(request.Bounds, settings.ElevationSource);
-        var filledBy = await FillInOrderAsync(order, request, heights, cancellationToken);
-        for (int k = 0; k < order.Count; k++)
-        {
-            long n = filledBy.Count(f => f == k);
-            if (n > 0) elevationCounts[order[k].Id] = n;
-        }
-        if (BlendDistance > 0 && order.Count > 1) await BlendSourceEdgesAsync(order, request, heights, filledBy, cancellationToken);
-        int missing = FillHoles(heights, request.Columns, request.Rows);
+        var (textureWidth, textureHeight) = layout.TextureSizeOf(key);
+        double texel = rect.Width / textureWidth;
+        var colors = settings.Texture == TerrainTexture.None ? null : new uint[textureWidth * textureHeight];
+        var imageryCounts = new Dictionary<string, long>();
+        // The imagery downloads while the heights do (it doesn't depend on them).
+        var imagery = colors != null && settings.Texture == TerrainTexture.Imagery
+            ? FillImageryAsync(settings, frame, rect, texel, textureWidth, textureHeight, colors, imageryCounts, cancellationToken)
+            : Task.CompletedTask;
+
+        var heightsTask = FillHeightsAsync(settings, frame, rect, cancellationToken);
+        await Task.WhenAll(heightsTask, imagery);
+        var (heights, elevationCounts, missing) = heightsTask.Result;
 
         byte[]? texture = null;
-        var imageryCounts = new Dictionary<string, long>();
-        var (textureWidth, textureHeight) = layout.TextureSizeOf(key);
         long texels = 0;
-        if (settings.Texture != TerrainTexture.None)
+        if (colors != null)
         {
-            double texel = rect.Width / textureWidth;
-            var colors = new uint[textureWidth * textureHeight];
-            if (settings.Texture == TerrainTexture.Imagery)
-            {
-                var colorRequest = new SampleRequest(frame, rect.X0 + texel / 2, rect.Z0 + texel / 2, texel, textureWidth, textureHeight);
-                foreach (var source in sources.ImageryFor(colorRequest.Bounds, settings.ImagerySource))
-                {
-                    int filled = await source.FillAsync(colorRequest, colors, cancellationToken);
-                    if (filled > 0) imageryCounts[source.Id] = filled;
-                    if (!colors.Any(c => c >> 24 == 0)) break;
-                }
-            }
             texels = colors.Length;
             PaintElevationColors(colors, textureWidth, textureHeight, heights, rect);
             texture = EncodeJpeg(colors, textureWidth, textureHeight, TextureQuality);
@@ -137,6 +169,40 @@ public sealed class TerrainBuilder(TerrainSources sources)
 
         var tile = new TerrainTile(key, rect, heights, texture, textureWidth, textureHeight);
         return (tile, new TileCounts(elevationCounts, imageryCounts, heights.Length, missing, texels));
+    }
+
+    // The tile's samples and a border of one, from the elevation sources in order, eased where one ends; holes filled.
+    private async Task<(float[] Heights, Dictionary<string, long> Counts, int Missing)> FillHeightsAsync(TerrainSettings settings, LocalFrame frame,
+        TileRect rect, CancellationToken cancellationToken)
+    {
+        double s = rect.Spacing;
+        var request = new SampleRequest(frame, rect.X0 - s, rect.Z0 - s, s, rect.Columns + 2, rect.Rows + 2);
+        var heights = new float[request.Count];
+        Array.Fill(heights, float.NaN);
+        var counts = new Dictionary<string, long>();
+        var order = sources.ElevationFor(request.Bounds, settings.ElevationSource, request.Spacing);
+        var filledBy = await FillInOrderAsync(order, request, heights, cancellationToken);
+        for (int k = 0; k < order.Count; k++)
+        {
+            long n = filledBy.Count(f => f == k);
+            if (n > 0) counts[order[k].Id] = n;
+        }
+        if (BlendDistance > 0 && order.Count > 1) await BlendSourceEdgesAsync(order, request, heights, filledBy, cancellationToken);
+        int missing = FillHoles(heights, request.Columns, request.Rows);
+        return (heights, counts, missing);
+    }
+
+    // Texel centers half a texel inside the tile's edges, from the imagery sources in order.
+    private async Task FillImageryAsync(TerrainSettings settings, LocalFrame frame, TileRect rect, double texel, int width, int height,
+        uint[] colors, Dictionary<string, long> counts, CancellationToken cancellationToken)
+    {
+        var request = new SampleRequest(frame, rect.X0 + texel / 2, rect.Z0 + texel / 2, texel, width, height);
+        foreach (var source in sources.ImageryFor(request.Bounds, settings.ImagerySource, texel))
+        {
+            int filled = await source.FillAsync(request, colors, cancellationToken);
+            if (filled > 0) counts[source.Id] = filled;
+            if (!colors.Any(c => c >> 24 == 0)) break;
+        }
     }
 
     // Fills the heights from the sources in order; returns which source filled each sample (−1: none).

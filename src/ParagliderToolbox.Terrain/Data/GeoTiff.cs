@@ -66,9 +66,31 @@ public sealed class TiffImage
     public bool IsMask { get; internal init; }
 
     internal int PlanarConfiguration { get; init; } = 1;
-    internal long[] Offsets { get; init; } = [];
-    internal long[] ByteCounts { get; init; } = [];
     internal byte[]? JpegTables { get; init; }
+
+    // Where the blocks are: read with the directory when it fits the header, else when a block is first needed (a large
+    // file's full resolution has an index of hundreds of kilobytes that a coarse level never reads).
+    internal Func<CancellationToken, Task<(long[] Offsets, long[] ByteCounts)>> LoadIndex { get; init; } = _ => Task.FromResult<(long[], long[])>(([], []));
+    private readonly object _indexLock = new();
+    private Task<(long[] Offsets, long[] ByteCounts)>? _index;
+
+    internal async Task<(long[] Offsets, long[] ByteCounts)> IndexAsync(CancellationToken cancellationToken)
+    {
+        Task<(long[], long[])> task;
+        lock (_indexLock) task = _index ??= LoadIndex(CancellationToken.None);
+        try
+        {
+            return await task.WaitAsync(cancellationToken);
+        }
+        catch (Exception) when (task.IsFaulted)
+        {
+            lock (_indexLock) if (_index == task) _index = null;
+            throw;
+        }
+    }
+
+    /// <summary>Gets whether the image's block index has been read.</summary>
+    internal bool IsIndexLoaded => _index is { IsCompletedSuccessfully: true };
 }
 
 /// <summary>
@@ -85,7 +107,7 @@ public sealed class TiffImage
 /// </remarks>
 public sealed class GeoTiff
 {
-    private const int HeaderBytes = 64 * 1024;
+    private const int DefaultHeaderBytes = 64 * 1024;
 
     private readonly IRangeReader _reader;
     private readonly bool _bigEndian;
@@ -123,9 +145,12 @@ public sealed class GeoTiff
 
     /// <summary>Reads the file's structure (its first 64 KiB, more if the directories need it).</summary>
     /// <exception cref="InvalidDataException">The file isn't a TIFF.</exception>
-    public static async Task<GeoTiff> OpenAsync(IRangeReader reader, CancellationToken cancellationToken = default)
+    public static Task<GeoTiff> OpenAsync(IRangeReader reader, CancellationToken cancellationToken = default) =>
+        OpenAsync(reader, DefaultHeaderBytes, cancellationToken);
+
+    internal static async Task<GeoTiff> OpenAsync(IRangeReader reader, int headerBytes, CancellationToken cancellationToken)
     {
-        var header = await reader.ReadAsync(0, HeaderBytes, cancellationToken);
+        var header = await reader.ReadAsync(0, headerBytes, cancellationToken);
         if (header.Length < 8) throw new InvalidDataException($"{reader.Name} isn't a TIFF file.");
         bool bigEndian = header[0] == 'M' && header[1] == 'M';
         if (!bigEndian && !(header[0] == 'I' && header[1] == 'I')) throw new InvalidDataException($"{reader.Name} isn't a TIFF file.");
@@ -222,7 +247,9 @@ public sealed class GeoTiff
         if (info.PlanarConfiguration != 1 && info.SamplesPerPixel > 1) throw new NotSupportedException($"{Name}: separate sample planes aren't supported.");
         int index = blockY * info.BlocksAcross + blockX;
         int rows = info.IsTiled ? info.BlockHeight : Math.Min(info.BlockHeight, info.Height - blockY * info.BlockHeight);
-        long offset = info.Offsets[index], length = info.ByteCounts[index];
+        var (offsets, counts) = await info.IndexAsync(cancellationToken);
+        if (index >= offsets.Length || index >= counts.Length) return ([], 0);
+        long offset = offsets[index], length = counts[index];
         if (length <= 0) return ([], 0);
         byte[] raw = await _reader.ReadAsync(offset, (int)length, cancellationToken);
         if (info.Compression == 7) return (raw, rows);
@@ -390,7 +417,10 @@ public sealed class GeoTiff
         Images = images.Take(1).Concat(images.Skip(1).Where(i => i.Width < images[0].Width).OrderByDescending(i => i.Width)).ToList();
     }
 
-    private readonly record struct Entry(ushort Tag, ushort Type, long Count, byte[] Value);
+    // A directory entry; a block index beyond the header isn't read yet (Value empty, At where it is).
+    private readonly record struct Entry(ushort Tag, ushort Type, long Count, byte[] Value, long At = -1);
+
+    private static bool IsBlockIndex(ushort tag) => tag is 273 or 279 or 324 or 325;
 
     private async Task<(List<Entry> Entries, long Next)> ReadDirectoryAsync(long offset, bool big, CancellationToken cancellationToken)
     {
@@ -406,17 +436,18 @@ public sealed class GeoTiff
             long n = big ? (long)U64(e[4..]) : U32(e[4..]);
             long size = TypeSize(type) * n;
             var inline = e[(big ? 12 : 8)..];
-            byte[] value;
             if (size <= offsetSize)
             {
-                value = inline[..(int)size].ToArray();
+                entries.Add(new Entry(tag, type, n, inline[..(int)size].ToArray()));
+                continue;
             }
-            else
+            long at = big ? (long)U64(inline) : U32(inline);
+            if (IsBlockIndex(tag) && at + size > _header.Length)
             {
-                long at = big ? (long)U64(inline) : U32(inline);
-                value = await ReadBytesAsync(at, size, cancellationToken);
+                entries.Add(new Entry(tag, type, n, [], at));
+                continue;
             }
-            entries.Add(new Entry(tag, type, n, value));
+            entries.Add(new Entry(tag, type, n, await ReadBytesAsync(at, size, cancellationToken)));
         }
         var tail = block.AsSpan((int)(count * entrySize));
         long next = big ? (long)U64(tail) : U32(tail);
@@ -485,8 +516,8 @@ public sealed class GeoTiff
         bool tiled = Find(322) != null;
         int blockWidth = tiled ? (int)Int(322, width) : width;
         int blockHeight = tiled ? (int)Int(323, height) : (int)Math.Min(Int(278, height), height);
-        var offsets = Find(tiled ? (ushort)324 : (ushort)273) is { } o ? Integers(o) : [];
-        var counts = Find(tiled ? (ushort)325 : (ushort)279) is { } c ? Integers(c) : [];
+        var offsets = Find(tiled ? (ushort)324 : (ushort)273);
+        var counts = Find(tiled ? (ushort)325 : (ushort)279);
         var image = new TiffImage
         {
             Width = width,
@@ -502,13 +533,20 @@ public sealed class GeoTiff
             Photometric = (int)Int(262, 1),
             PlanarConfiguration = (int)Int(284, 1),
             IsMask = (Int(254, 0) & 4) != 0,
-            Offsets = offsets,
-            ByteCounts = counts,
+            LoadIndex = async token => (await ValuesAsync(offsets, token), await ValuesAsync(counts, token)),
             JpegTables = Find(347)?.Value,
         };
 
         if (first) ReadGeoreferencing(Find, image);
         return Task.FromResult(image);
+    }
+
+    private async Task<long[]> ValuesAsync(Entry? entry, CancellationToken cancellationToken)
+    {
+        if (entry is not { } e) return [];
+        if (e.At < 0) return Integers(e);
+        var bytes = await ReadBytesAsync(e.At, TypeSize(e.Type) * e.Count, cancellationToken);
+        return Integers(e with { Value = bytes, At = -1 });
     }
 
     private void ReadGeoreferencing(Func<ushort, Entry?> find, TiffImage image)

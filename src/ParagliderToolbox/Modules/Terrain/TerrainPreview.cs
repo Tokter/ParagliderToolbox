@@ -40,6 +40,8 @@ public sealed partial class TerrainPreview : ObservableObject, IDisposable
     [ObservableProperty] private string _status = "";
     [ObservableProperty] private string _sources = "";
     [ObservableProperty] private string _view = "";
+    [ObservableProperty] private string _flightInfo = "";
+    [ObservableProperty] private string _statusNote = "";
     [ObservableProperty] private bool _isOutdated;
     [ObservableProperty] private bool _showLevels;
     [ObservableProperty] private bool _textured = true;
@@ -96,16 +98,19 @@ public sealed partial class TerrainPreview : ObservableObject, IDisposable
         IsBuilding = true;
         IsOutdated = false;
         Progress = 0;
-        Status = "Finding the data…";
+        Status = "Starting…";
         _built.Clear();
         _scene.Show(settings, layout, _built);
         _framed = false;
         var progress = new UiProgress(p =>
         {
-            if (cancellation.IsCancellationRequested || _disposed) return;
-            if (p.Tile is { } tile) _built[tile.Key] = tile;
+            // Reports still queued when the build ended (or was canceled) are dropped.
+            if (cancellation.IsCancellationRequested || _disposed || _build != cancellation) return;
             Progress = p.Fraction;
-            Status = string.Create(CultureInfo.CurrentCulture, $"Building: {p.TilesDone} of {p.TileCount} tiles · {p.BytesDownloaded / 1e6:0.0} MB downloaded");
+            Status = Describe(p);
+            StatusNote = Note(p);
+            if (p.Tile is not { } tile) return;
+            _built[tile.Key] = tile;
             if (!_framed && layout.Roots.All(_built.ContainsKey))
             {
                 _framed = true;
@@ -149,12 +154,33 @@ public sealed partial class TerrainPreview : ObservableObject, IDisposable
         {
             if (_build == cancellation) _build = null;
             IsBuilding = false;
+            StatusNote = "";
             Progress = 1;
         }
     }
 
     private static string Shares(string label, IReadOnlyList<SourceShare> shares) => shares.Count == 0 ? ""
         : label + ": " + string.Join(", ", shares.Select(s => string.Create(CultureInfo.CurrentCulture, $"{s.Source.Name} {s.Share:P0}")));
+
+    // What the build is doing: the level (coarse levels first) and its tiles, and the downloads, which show it's alive.
+    private static string Describe(TerrainProgress p)
+    {
+        var culture = CultureInfo.CurrentCulture;
+        string size = p.LevelTileSize >= 1000 ? string.Create(culture, $"{p.LevelTileSize / 1000:0.#} km") : string.Create(culture, $"{p.LevelTileSize:0} m");
+        string which = p.LevelCount <= 1 ? "the terrain"
+            : p.Level == p.LevelCount - 1 ? $"the coarsest level ({size} tiles)"
+            : p.Level == 0 ? $"the finest level ({size} tiles)"
+            : $"level {p.Level} of {p.LevelCount - 1} ({size} tiles)";
+        return string.Create(culture,
+            $"Building {which}: {p.LevelTilesDone} of {p.LevelTileCount} · {p.TilesDone} of {p.TileCount} tiles in all · " +
+            $"{p.Requests:#,0} requests, {p.BytesDownloaded / 1e6:0.0} MB downloaded · {p.Elapsed.TotalSeconds:0} s");
+    }
+
+    // Why the start can take a while, once it does.
+    private static string Note(TerrainProgress p) =>
+        p.TilesDone > 0 || p.Elapsed.TotalSeconds < 3 ? ""
+        : p.Requests > 0 ? "The coarsest tile covers the whole area and reads a little of every file; the finer levels come faster."
+        : "Reading the downloaded data from the cache…";
 
     private static string Describe(TerrainModel model)
     {
@@ -178,10 +204,22 @@ public sealed partial class TerrainPreview : ObservableObject, IDisposable
     #endregion
 
     /// <summary>Chooses the tiles for the camera; returns whether another frame should choose again (meshes still to make).</summary>
-    public bool UpdateLevels(OrbitCamera camera, float viewportHeight)
+    public bool UpdateLevels(OrbitCamera camera, float viewportHeight, TerrainFlight? flight = null)
     {
         _scene.Select(camera.Position, camera.FieldOfView, viewportHeight);
         View = string.Create(CultureInfo.CurrentCulture, $"showing {_scene.ShownTiles} tiles, {_scene.ShownTriangles / 1000.0:0.#}k triangles");
+        // Where the camera is, as a pilot reads it: the altitude and the height above the ground (and the speed, flying).
+        string info = "";
+        if (flight != null && _scene.ShownTiles > 0)
+        {
+            info = string.Create(CultureInfo.CurrentCulture, $"{camera.Position.Y:#,0} m");
+            if (_scene.HeightAt(camera.Position.X, camera.Position.Z) is not null)
+            {
+                info += string.Create(CultureInfo.CurrentCulture, $" · {flight.HeightAboveGround:#,0} m above ground");
+            }
+            if (flight.IsMoving) info += string.Create(CultureInfo.CurrentCulture, $" · {flight.Speed * 3.6f:#,0} km/h");
+        }
+        FlightInfo = info;
         return _scene.NeedsAnotherPass;
     }
 

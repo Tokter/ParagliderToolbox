@@ -130,21 +130,35 @@ public sealed class SwissTopoCatalog(DataCache cache)
         {
             DateTime.TryParse(datetime.GetString(), CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal, out date);
         }
-        var assets = new List<SwissAsset>();
-        if (feature.TryGetProperty("assets", out var assetsElement))
-        {
-            foreach (var asset in assetsElement.EnumerateObject())
-            {
-                var value = asset.Value;
-                if (!value.TryGetProperty("href", out var href) || href.GetString() is not { } link) continue;
-                if (!link.EndsWith(".tif", StringComparison.OrdinalIgnoreCase)) continue;
-                double gsd = value.TryGetProperty("gsd", out var g) && g.TryGetDouble(out double v) ? v
-                    : value.TryGetProperty("eo:gsd", out var eo) && eo.TryGetDouble(out double w) ? w : 0;
-                string? updated = value.TryGetProperty("updated", out var u) ? u.GetString() : null;
-                assets.Add(new SwissAsset(link, gsd, updated));
-            }
-        }
+        var assets = ParseAssets(feature);
         return assets.Count == 0 ? null : new SwissTile(east, north, date, assets);
+    }
+
+    // The item's GeoTIFF files.
+    private static List<SwissAsset> ParseAssets(JsonElement feature)
+    {
+        var assets = new List<SwissAsset>();
+        if (!feature.TryGetProperty("assets", out var assetsElement)) return assets;
+        foreach (var asset in assetsElement.EnumerateObject())
+        {
+            var value = asset.Value;
+            if (!value.TryGetProperty("href", out var href) || href.GetString() is not { } link) continue;
+            if (!link.EndsWith(".tif", StringComparison.OrdinalIgnoreCase)) continue;
+            double gsd = value.TryGetProperty("gsd", out var g) && g.TryGetDouble(out double v) ? v
+                : value.TryGetProperty("eo:gsd", out var eo) && eo.TryGetDouble(out double w) ? w : 0;
+            string? updated = value.TryGetProperty("updated", out var u) ? u.GetString() : null;
+            assets.Add(new SwissAsset(link, gsd, updated));
+        }
+        return assets;
+    }
+
+    /// <summary>Gets the GeoTIFF files of one item of <paramref name="collection"/> (such as a national mosaic); none when there is no such item.</summary>
+    public async Task<IReadOnlyList<SwissAsset>> FindItemAsync(string collection, string item, CancellationToken cancellationToken)
+    {
+        var json = await cache.GetAsync($"{Api}/collections/{collection}/items/{item}", s_maxAge, cancellationToken);
+        if (json is null) return [];
+        using var document = JsonDocument.Parse(json);
+        return ParseAssets(document.RootElement);
     }
 
     /// <summary>Gets the file of <paramref name="tile"/> best for sampling at <paramref name="spacing"/>: the coarsest at most that fine, else the finest.</summary>

@@ -148,15 +148,18 @@ N/E, or Swiss coordinates) or pick a paragliding site, and a style:
 - **Simulator**: 30 km, full detail (2 m) within 3 km of the center and coarser further out.
 
 The detail view builds it (downloading only the parts of the data it needs, then from the cache) and shows the tiles
-as they come in, coarse to fine; the camera chooses the levels of detail. Every point takes the finest data there is:
+as they come in, coarse to fine; the camera chooses the levels of detail. While it builds, the line below the view
+tells the level, the tiles and what has been downloaded. Every point takes the finest data there is (a coarse level
+takes the coarsest source that is still fine enough for it, which has far less to download):
 
 | Where | Elevation | Imagery |
 |---|---|---|
 | Switzerland | swissALTI3D (swisstopo), lidar, bare ground, 0.5 m | SWISSIMAGE (swisstopo), 10 cm |
+| Around Switzerland (100 km and more beyond the border) | swissALTIRegio (swisstopo), bare ground, 10 m | Sentinel-2 cloudless 2016 (EOX), 10 m |
 | Everywhere else | Copernicus DEM GLO-30, 30 m | Sentinel-2 cloudless 2016 (EOX), 10 m |
 
-All four may be used commercially; they require credit, which every export carries (`ATTRIBUTION.txt`). Where the
-Swiss data ends, its heights ease into Copernicus over 200 m.
+All of them may be used commercially; they require credit, which every export carries (`ATTRIBUTION.txt`). Where a
+finer source's data ends, its heights ease into the next one's over 200 m.
 
 The properties set the size, the finest resolution, the samples per tile (2^k + 1, as engines' heightmaps need), the
 levels of detail (a quadtree: each level half as fine, a quarter as many tiles), a full detail area for large
@@ -170,6 +173,8 @@ writes the most detailed tiles as one file, for Blender.
 |---|---|
 | G | Generate (again to cancel) |
 | L / T | Tint the levels of detail / show the texture |
+| W, A, S, D (held), E / Q, Shift | Fly through the landscape: where the camera looks, left, back, right; up / down; faster (the speed follows the height above the ground) |
+| Right drag | Look around without moving |
 | Middle drag / Shift+middle drag / wheel, Home, Shift+Z | Orbit / pan / zoom, frame, wireframe |
 
 ### Terrain renders

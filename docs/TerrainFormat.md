@@ -117,11 +117,15 @@ Every level has the same pixels per whole tile, so coarser levels are coarser.
 
 ## Sources
 
-Each point of the terrain takes the finest data there is at it (the property editor can put a source first):
+Each point of the terrain takes the finest data there is at it (the property editor can put a source first). Regional
+sources come before global ones; among them a level takes the coarsest source that is still fine enough for its sample
+spacing (it has the same detail there with far less to read: a 30 km tile would read part of every swissALTI3D file),
+then the finer ones where it has no data:
 
 | Source | Covers | Data | Credit (required) | License |
 |---|---|---|---|---|
 | swissALTI3D (swisstopo) | Switzerland, Liechtenstein | Lidar terrain model, bare ground, 0.5 m and 2 m | © swisstopo | Free, including commercial use |
+| swissALTIRegio (swisstopo) | Switzerland and 100 km and more around it | Terrain model, bare ground, 10 m | Bundesamt für Landestopografie swisstopo; TINITALY/1.1 (INGV, doi:10.13127/tinitaly/1.1); DGM Österreich, geoland.at; DGM1, Bayerische Vermessungsverwaltung – www.geodaten.bayern.de; DGM1 Baden-Württemberg: LGL, www.lgl-bw.de; RGEAlti, Institut National de l'information géographique et forestière | Free, including commercial use |
 | SWISSIMAGE (swisstopo) | Switzerland | Orthophotos, 10 cm (25 cm in the Alps) | © swisstopo | Free, including commercial use |
 | Copernicus DEM GLO-30 | World | Surface model (with forests and buildings), 30 m | Produced using Copernicus WorldDEM-30 © DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA; all rights reserved | Free, including commercial use; credit and liability disclaimer |
 | Sentinel-2 cloudless 2016 (EOX) | World | Cloud-free satellite mosaic, 10 m | Sentinel-2 cloudless 2016 by EOX IT Services GmbH (Contains modified Copernicus Sentinel data 2016 & 2017) | CC BY 4.0 |
@@ -132,8 +136,8 @@ Where a finer source's data ends (at the Swiss border, or swisstopo's 1 km tiles
 source's over 200 m: Copernicus is a surface model and stands 15–25 m above swissALTI3D's bare ground in forests. The
 imagery changes from 10 cm to 10 m there.
 
-The toolbox reads the sources' Cloud Optimized GeoTIFFs (and map tiles) with byte range requests, so only the parts a
-terrain needs are downloaded, and keeps them in `%LOCALAPPDATA%\ParagliderToolbox\TerrainCache`
+The toolbox reads the sources' Cloud Optimized GeoTIFFs (and map tiles) with byte range requests (up to 16 at once,
+over HTTP/2 where the server offers it), so only the parts a terrain needs are downloaded, and keeps them in `%LOCALAPPDATA%\ParagliderToolbox\TerrainCache`
 (`PARAGLIDERTOOLBOX_TERRAIN_CACHE` overrides it; Tools > Clear terrain cache empties it). A terrain built once builds
 again offline.
 

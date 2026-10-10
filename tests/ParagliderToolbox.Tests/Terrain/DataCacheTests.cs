@@ -10,16 +10,38 @@ internal sealed class FakeServer : HttpMessageHandler
     public Dictionary<string, byte[]> Files { get; } = [];
     public List<(string Url, RangeItemHeaderValue? Range)> Requests { get; } = [];
 
-    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    /// <summary>Gets or sets how long every response takes.</summary>
+    public TimeSpan Delay { get; set; }
+
+    /// <summary>Gets the most requests that were answered at once.</summary>
+    public int MostAtOnce { get; private set; }
+
+    private int _running;
+
+    protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    {
+        lock (Requests) MostAtOnce = Math.Max(MostAtOnce, ++_running);
+        try
+        {
+            if (Delay > TimeSpan.Zero) await Task.Delay(Delay, cancellationToken);
+            return Respond(request);
+        }
+        finally
+        {
+            lock (Requests) _running--;
+        }
+    }
+
+    private HttpResponseMessage Respond(HttpRequestMessage request)
     {
         string url = request.RequestUri!.ToString();
         var range = request.Headers.Range?.Ranges.FirstOrDefault();
         lock (Requests) Requests.Add((url, range));
-        if (!Files.TryGetValue(url, out var data)) return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound));
-        if (range is null) return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(data) });
+        if (!Files.TryGetValue(url, out var data)) return new HttpResponseMessage(HttpStatusCode.NotFound);
+        if (range is null) return new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(data) };
         long from = range.From ?? 0, to = Math.Min(range.To ?? data.Length - 1, data.Length - 1);
-        if (from >= data.Length) return Task.FromResult(new HttpResponseMessage(HttpStatusCode.RequestedRangeNotSatisfiable));
-        return Task.FromResult(new HttpResponseMessage(HttpStatusCode.PartialContent) { Content = new ByteArrayContent(data[(int)from..(int)(to + 1)]) });
+        if (from >= data.Length) return new HttpResponseMessage(HttpStatusCode.RequestedRangeNotSatisfiable);
+        return new HttpResponseMessage(HttpStatusCode.PartialContent) { Content = new ByteArrayContent(data[(int)from..(int)(to + 1)]) };
     }
 }
 
@@ -53,6 +75,24 @@ public class DataCacheTests : IDisposable
         Assert.Equal(_file[DataCache.ChunkSize..(DataCache.ChunkSize + 100)], again);
         Assert.Single(_server.Requests);
         Assert.True(cache.BytesDownloaded >= 2 * DataCache.ChunkSize);
+    }
+
+    [Fact]
+    public async Task ReadsOfOneFile_RunInParallel_AndShareTheChunksBeingDownloaded()
+    {
+        _server.Delay = TimeSpan.FromMilliseconds(200);
+        var reader = Cache().OpenRanges("https://data.test/big.tif");
+        // Three chunks, each read twice at once.
+        var reads = Enumerable.Range(0, 6).Select(i => reader.ReadAsync(i % 3 * DataCache.ChunkSize + 7, 100)).ToArray();
+        var results = await Task.WhenAll(reads);
+
+        for (int i = 0; i < 6; i++)
+        {
+            int at = i % 3 * DataCache.ChunkSize + 7;
+            Assert.Equal(_file[at..(at + 100)], results[i]);
+        }
+        Assert.Equal(3, _server.Requests.Count);
+        Assert.Equal(3, _server.MostAtOnce);
     }
 
     [Fact]

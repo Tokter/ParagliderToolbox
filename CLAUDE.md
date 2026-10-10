@@ -170,17 +170,24 @@ documents the tile set export for game developers; keep it in sync with the layo
   swisstopo's ~1 m approximate formulas). `GeoPoint.TryParse` reads decimal, DMS and Swiss coordinates.
 - **Data** (`Data`): `DataCache` (whole resources with a max age and stale fallback when offline, 404s remembered;
   byte ranges of large files in 64 KiB chunk files, the folder naming the size: a terrain reads the headers of hundreds
-  of files; consecutive misses in one request; six requests at once, retries) and `GeoTiff`, an own COG reader (TIFF/BigTIFF, tiles/strips, none/LZW/Deflate/PackBits/JPEG with shared tables,
-  both predictors, GeoKeys, GDAL no-data; overviews listed fine to coarse). No GDAL on purpose: no native
+  of files; consecutive misses in one request; 16 requests at once over HTTP/2, retries; reads of one file run in
+  parallel, sharing the chunks in flight: serializing them per file made the coarse levels, which all read the one
+  10 GB swissALTIRegio file, take minutes) and `GeoTiff`, an own COG reader (TIFF/BigTIFF, tiles/strips,
+  none/LZW/Deflate/PackBits/JPEG with shared tables, both predictors, GeoKeys, GDAL no-data; overviews listed fine to
+  coarse; block indexes beyond the 64 KiB header load when their image is first read). No GDAL on purpose: no native
   dependencies, and range reads fetch only the tiles and overviews a terrain needs.
 - **Sampling** (`Sampling`): `RasterLevel<T>` (one image of a file or one map-tile zoom, read in blocks; heights as
   float with NaN, colors as RGBA uint with alpha 0 for none), `BlockCache<T>` (LRU, shared loads), `RasterMosaic<T>`
   (files side by side: bilinear across their edges), `RasterFill` (projects a `SampleRequest` into a system, exact on
   every 8th sample, loads the blocks, interpolates; averages up to 4 × 4 points where data is much finer).
 - **Sources** (`Sources`): `IElevationSource`/`IImagerySource.FillAsync` fill only the still empty samples;
-  `TerrainSources` orders them per area (preferred first, then finest), so every point takes the best data there is.
-  `SwissAlti3DSource`/`SwissImageSource` (`SwissTopoCatalog`: the STAC API v1 in 8 km cells, the newest version per
-  1 km tile; the asset by gsd, then the overview by spacing), `CopernicusDemSource` (AWS bucket, 1° COGs; missing
+  `TerrainSources` orders them per area and spacing: preferred first, `SourceScope` Regional before Global, then the
+  coarsest `Resolution` still fine enough for the spacing, then the finer ones (where it has no data), then coarser.
+  So coarse levels read swissALTIRegio, not part of every swissALTI3D file (a Simulator root tile read 4257 ranges,
+  350 MB). `SwissAlti3DSource`/`SwissImageSource` (`SwissTopoCatalog`: the STAC API v1 in 8 km cells, the newest
+  version per 1 km tile; the asset by gsd, then the overview by spacing; the 2 m files have only 2 and 4 m images),
+  `SwissAltiRegioSource` (one BigTIFF COG, 10 m with overviews, Switzerland and ≥ 100 km around it, LV95; credits
+  the neighbors' data), `CopernicusDemSource` (AWS bucket, 1° COGs; missing
   tiles are sea at 0), `Sentinel2CloudlessSource` (EOX's 2016 layer, the only CC BY one; `WebTileLevel`). Measured:
   Copernicus is a surface model, median 1–4 m and in forests 15–25 m above swissALTI3D.
 - **Layout** (`TerrainLayout`): a quadtree of tiles with `TileSamples` (2^k + 1) per side at every level, each level
@@ -191,7 +198,9 @@ documents the tile set export for game developers; keep it in sync with the layo
   the neighbors, for normals) from the ordered sources; where a finer source ends, its heights ease into the next over
   `BlendDistance` (200 m; the coverage comes from a lattice aligned to the frame and reaching beyond the tile, so
   neighbors agree); holes take their neighbors' heights; the texture from the imagery sources, `ElevationColors`
-  (height and slope) where there is none, as JPEG. Each level samples the sources at its own spacing (their overviews).
+  (height and slope) where there is none, as JPEG, read alongside the heights. Each level samples the sources at its
+  own spacing (their overviews). `TerrainProgress` comes per tile and every `ProgressInterval` (0.5 s) while tiles
+  build: level, its tiles, requests, bytes, elapsed (the root tile of a large terrain takes seconds on a cold cache).
 - **Meshing/Export**: `TerrainMesh` (smooth with skirts 4 × the spacing deep, or faceted with per-face colors),
   `TerrainExporter` (tile folder: `terrain.json`, glb per tile with embedded JPEG, 16-bit PNG or RAW heightmaps,
   textures, `ATTRIBUTION.txt`; or the leaves down to a level as one glb), `Heightmaps` (own 16-bit PNG writer).
@@ -201,9 +210,15 @@ documents the tile set export for game developers; keep it in sync with the layo
   parses pasted positions; source choices saved as ids, edited by `SourceChoiceEditor` listing the registered sources;
   read-only summary from the layout), `NewTerrainOptions`/`NewTerrainView` (location, sites, Arcade/Game/Simulator
   styles), `TerrainPreview` (builds on first show and on Generate, not on every edit: downloads; tiles appear as they
-  come; `IsOutdated`), `TerrainScene` (LOD selection from the roots by projected sample spacing, meshes made within a
+  come; `IsOutdated`; the status line names the level, tiles and downloads, the progress bar is indeterminate until
+  the first tile), `TerrainScene` (LOD selection from the roots by projected sample spacing, meshes made within a
   30 ms budget per frame, half-texel UV inset because the viewport's textures repeat), `TerrainDetailView`,
-  `TerrainActions` (exports reuse the preview's model when its settings match, else build; clear the cache).
+  `TerrainActions` (exports reuse the preview's model when its settings match, else build; clear the cache),
+  `TerrainFlight` (WASD/E/Q fly the orbit camera, target and all, at 0.8 × the height above the ground per second,
+  Shift ×4, eased, above the ground; right drag looks around in place). The fly keys are commands of the "Terrain
+  flight" group (rebindable; run from the palette they step a second's worth): the detail view takes the keys bound
+  to them in `OnPreviewKeyDown` while held and releases them when the focus leaves (GLFW releases keys on window
+  deactivation). Posted window messages don't reach GLFW: drive the app with real input (keybd_event).
   The cache is `%LOCALAPPDATA%\ParagliderToolbox\TerrainCache` (`PARAGLIDERTOOLBOX_TERRAIN_CACHE`). Tests use fake
   sources and synthetic TIFFs (`TestTiff`, with an LZW encoder as libtiff writes it); nothing in the tests uses the
   network.

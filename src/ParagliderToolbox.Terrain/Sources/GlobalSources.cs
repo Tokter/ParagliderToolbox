@@ -40,6 +40,9 @@ public sealed class CopernicusDemSource(CogFiles files) : IElevationSource
     public double Resolution => 30;
 
     /// <inheritdoc/>
+    public SourceScope Scope => SourceScope.Global;
+
+    /// <inheritdoc/>
     public bool Covers(GeoBounds bounds) => true;
 
     /// <summary>Gets the URL of the tile whose south-west corner is at <paramref name="latitude"/>, <paramref name="longitude"/> (whole degrees).</summary>
@@ -130,6 +133,9 @@ public sealed class Sentinel2CloudlessSource(DataCache cache) : IImagerySource
 
     /// <inheritdoc/>
     public double Resolution => 10;
+
+    /// <inheritdoc/>
+    public SourceScope Scope => SourceScope.Global;
 
     /// <inheritdoc/>
     public bool Covers(GeoBounds bounds) => bounds.South < WebMercator.MaxLatitude && bounds.North > -WebMercator.MaxLatitude;

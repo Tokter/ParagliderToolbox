@@ -38,6 +38,7 @@ public sealed class TerrainModule : IToolboxModule
             category: "Terrains", description: "Add the terrain of a real place: elevation and aerial images in tiles and levels of detail, for a game",
             defaultKeybinding: "Ctrl+Shift+T", createInteractively: () => AskNewTerrainAsync(toolbox));
 
+        TerrainFlightCommands.Register();
         var actions = _actions = new TerrainActions(toolbox, Sources, node => _previews.TryGetValue(node, out var preview) ? preview.Model : null);
         toolbox.GlobalCommands.Add((TerrainActions.Group, actions));
         toolbox.DetailViews.Register<TerrainNode>(node =>

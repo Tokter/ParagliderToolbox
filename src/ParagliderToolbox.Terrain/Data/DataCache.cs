@@ -18,7 +18,7 @@ namespace ParagliderToolbox.Terrain.Data;
 /// network fails, so a terrain built once can be rebuilt offline. Byte ranges never expire: the files they come from
 /// don't change (new data comes as new files).
 /// </para>
-/// <para>At most six requests run at once, and failed requests are retried twice.</para>
+/// <para>At most 16 requests run at once (over HTTP/2 where the server offers it), and failed requests are retried twice.</para>
 /// </remarks>
 public sealed class DataCache
 {
@@ -28,7 +28,7 @@ public sealed class DataCache
     private static readonly Lazy<HttpClient> s_client = new(CreateHttpClient);
 
     private readonly HttpClient _client;
-    private readonly SemaphoreSlim _requests = new(6);
+    private readonly SemaphoreSlim _requests = new(16);
     private readonly ConcurrentDictionary<string, HttpRangeReader> _readers = new();
     private long _downloaded;
     private int _requestCount;
@@ -61,7 +61,8 @@ public sealed class DataCache
         {
             AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate | DecompressionMethods.Brotli,
             PooledConnectionLifetime = TimeSpan.FromMinutes(5),
-            MaxConnectionsPerServer = 6,
+            MaxConnectionsPerServer = 16,
+            EnableMultipleHttp2Connections = true,
         })
         {
             Timeout = TimeSpan.FromSeconds(90),
@@ -137,7 +138,7 @@ public sealed class DataCache
             await _requests.WaitAsync(cancellationToken);
             try
             {
-                using var request = new HttpRequestMessage(HttpMethod.Get, url);
+                using var request = new HttpRequestMessage(HttpMethod.Get, url) { Version = HttpVersion.Version20, VersionPolicy = HttpVersionPolicy.RequestVersionOrLower };
                 if (range is { } r) request.Headers.Range = new RangeHeaderValue(r.From, r.To);
                 Interlocked.Increment(ref _requestCount);
                 using var response = await _client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
@@ -194,7 +195,8 @@ public sealed class DataCache
     /// <summary>Reads byte ranges of a remote file through the cache's chunks; consecutive missing chunks are fetched in one request.</summary>
     private sealed class HttpRangeReader(DataCache cache, string url, string folder) : IRangeReader
     {
-        private readonly SemaphoreSlim _fetching = new(1);
+        // The chunks being downloaded, so readers wanting the same chunk wait for one request.
+        private readonly ConcurrentDictionary<long, TaskCompletionSource<byte[]>> _inFlight = new();
 
         public string Name => url;
 
@@ -218,15 +220,7 @@ public sealed class DataCache
             if (missing.Count > 0)
             {
                 if (cache.IsOffline) throw new HttpRequestException($"Offline, and {url} isn't cached.");
-                await _fetching.WaitAsync(cancellationToken);
-                try
-                {
-                    await FetchAsync(missing, first, chunks, cancellationToken);
-                }
-                finally
-                {
-                    _fetching.Release();
-                }
+                await FetchAsync(missing, first, chunks, cancellationToken);
             }
 
             // Copy the range out of the chunks; a short chunk is the end of the file.
@@ -245,42 +239,99 @@ public sealed class DataCache
             return written == count ? result : result[..written];
         }
 
+        // Fetches the missing chunks: those no other reader is fetching (consecutive ones in one request), while waiting
+        // for the others' requests; so reads of one file run in parallel (a terrain's coarse levels may all read from
+        // one large file), but no chunk is downloaded twice.
         private async Task FetchAsync(List<long> missing, long first, byte[][] chunks, CancellationToken cancellationToken)
         {
-            // Another reader may have fetched them while this one waited.
-            for (int i = missing.Count - 1; i >= 0; i--)
+            while (missing.Count > 0)
             {
-                if (await TryReadChunkAsync(missing[i], cancellationToken) is { } chunk)
+                var owned = new List<(long Chunk, TaskCompletionSource<byte[]> Fetch)>();
+                var waiting = new List<(long Chunk, Task<byte[]> Fetch)>();
+                foreach (long k in missing)
                 {
-                    chunks[missing[i] - first] = chunk;
-                    missing.RemoveAt(i);
+                    var fetch = new TaskCompletionSource<byte[]>(TaskCreationOptions.RunContinuationsAsynchronously);
+                    var current = _inFlight.GetOrAdd(k, fetch);
+                    if (current == fetch) owned.Add((k, fetch));
+                    else waiting.Add((k, current.Task));
+                }
+                missing.Clear();
+                try
+                {
+                    await FetchOwnedAsync(owned, first, chunks, cancellationToken);
+                }
+                finally
+                {
+                    // Chunks are on disk before they leave the map, so a reader that misses both finds them there.
+                    foreach (var (k, fetch) in owned)
+                    {
+                        fetch.TrySetCanceled(CancellationToken.None);
+                        _inFlight.TryRemove(new KeyValuePair<long, TaskCompletionSource<byte[]>>(k, fetch));
+                    }
+                }
+                foreach (var (k, fetch) in waiting)
+                {
+                    try
+                    {
+                        chunks[k - first] = await fetch.WaitAsync(cancellationToken);
+                    }
+                    catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                    {
+                        // That reader's build was canceled, not this one: fetch the chunk itself.
+                        missing.Add(k);
+                    }
                 }
             }
-            int index = 0;
-            while (index < missing.Count)
+        }
+
+        private async Task FetchOwnedAsync(List<(long Chunk, TaskCompletionSource<byte[]> Fetch)> owned, long first, byte[][] chunks, CancellationToken cancellationToken)
+        {
+            // Another reader may have fetched them since this one looked.
+            for (int i = owned.Count - 1; i >= 0; i--)
             {
-                int end = index;
-                while (end + 1 < missing.Count && missing[end + 1] == missing[end] + 1) end++;
-                long from = missing[index] * ChunkSize, to = (missing[end] + 1) * ChunkSize - 1;
-                var (status, data) = await cache.SendAsync(url, (from, to), cancellationToken);
-                if (status == HttpStatusCode.NotFound)
+                if (await TryReadChunkAsync(owned[i].Chunk, cancellationToken) is { } chunk)
                 {
-                    await WriteAtomicAsync(Path.Combine(folder, "missing.404"), [], cancellationToken);
-                    throw new FileNotFoundException($"{url} doesn't exist.", url);
+                    chunks[owned[i].Chunk - first] = chunk;
+                    owned[i].Fetch.TrySetResult(chunk);
+                    owned.RemoveAt(i);
                 }
-                for (int i = index; i <= end; i++)
-                {
-                    long k = missing[i];
-                    int start = (int)((k - missing[index]) * ChunkSize);
-                    var chunk = start >= data.Length ? [] : data[start..Math.Min(start + ChunkSize, data.Length)];
-                    chunks[k - first] = chunk;
-                    await WriteAtomicAsync(ChunkPath(k), chunk, cancellationToken);
-                }
-                index = end + 1;
             }
-            if (!File.Exists(Path.Combine(folder, "url.txt")))
+            if (owned.Count == 0) return;
+            try
             {
-                await File.WriteAllTextAsync(Path.Combine(folder, "url.txt"), url, cancellationToken);
+                int index = 0;
+                while (index < owned.Count)
+                {
+                    int end = index;
+                    while (end + 1 < owned.Count && owned[end + 1].Chunk == owned[end].Chunk + 1) end++;
+                    long from = owned[index].Chunk * ChunkSize, to = (owned[end].Chunk + 1) * ChunkSize - 1;
+                    var (status, data) = await cache.SendAsync(url, (from, to), cancellationToken);
+                    if (status == HttpStatusCode.NotFound)
+                    {
+                        await WriteAtomicAsync(Path.Combine(folder, "missing.404"), [], cancellationToken);
+                        throw new FileNotFoundException($"{url} doesn't exist.", url);
+                    }
+                    for (int i = index; i <= end; i++)
+                    {
+                        var (k, fetch) = owned[i];
+                        int start = (int)((k - owned[index].Chunk) * ChunkSize);
+                        var chunk = start >= data.Length ? [] : data[start..Math.Min(start + ChunkSize, data.Length)];
+                        chunks[k - first] = chunk;
+                        await WriteAtomicAsync(ChunkPath(k), chunk, cancellationToken);
+                        fetch.TrySetResult(chunk);
+                    }
+                    index = end + 1;
+                }
+                if (!File.Exists(Path.Combine(folder, "url.txt")))
+                {
+                    await File.WriteAllTextAsync(Path.Combine(folder, "url.txt"), url, cancellationToken);
+                }
+            }
+            catch (Exception e) when (e is not OperationCanceledException)
+            {
+                // The readers waiting for these chunks fail the same way.
+                foreach (var (_, fetch) in owned) fetch.TrySetException(e);
+                throw;
             }
         }
 

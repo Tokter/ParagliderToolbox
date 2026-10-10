@@ -1,3 +1,4 @@
+using ParagliderToolbox.Terrain.Data;
 using ParagliderToolbox.Terrain.Geodesy;
 using ParagliderToolbox.Terrain.Sampling;
 
@@ -36,6 +37,9 @@ public sealed class SwissAlti3DSource(CogFiles files, SwissTopoCatalog catalog) 
     public double Resolution => 0.5;
 
     /// <inheritdoc/>
+    public SourceScope Scope => SourceScope.Regional;
+
+    /// <inheritdoc/>
     public bool Covers(GeoBounds bounds) => bounds.Intersects(SwissBounds);
 
     /// <inheritdoc/>
@@ -47,6 +51,83 @@ public sealed class SwissAlti3DSource(CogFiles files, SwissTopoCatalog catalog) 
         if (levels is null) return 0;
         return await RasterFill.FillHeightsAsync(request, heights, SwissGrid.Instance, new RasterMosaic<float>(levels.Value.Levels),
             levels.Value.PixelMeters, _blocks, cancellationToken);
+    }
+}
+
+/// <summary>
+/// swissALTIRegio, swisstopo's 10 m terrain model of Switzerland and at least 100 km around it (bare ground, from the
+/// neighbouring countries' national models abroad): one Cloud Optimized GeoTIFF in LV95 with overviews down to
+/// hundreds of meters, so coarse levels of detail read a few of its tiles instead of every 1 km swissALTI3D file.
+/// </summary>
+public sealed class SwissAltiRegioSource(CogFiles files, SwissTopoCatalog catalog) : IElevationSource
+{
+    /// <summary>The STAC collection.</summary>
+    public const string Collection = "ch.swisstopo.swissaltiregio";
+
+    /// <summary>The collection's item holding the whole model.</summary>
+    public const string Item = "swissaltiregio";
+
+    /// <summary>The area the model covers (from its catalog entry).</summary>
+    public static readonly GeoBounds RegioBounds = new(44.83, 4.51, 48.79, 11.99);
+
+    private readonly BlockCache<float> _blocks = new();
+    private readonly object _lock = new();
+    private Task<GeoTiff?>? _file;
+
+    /// <inheritdoc/>
+    public string Id => "swissaltiregio";
+
+    /// <inheritdoc/>
+    public string Name => "swissALTIRegio (swisstopo)";
+
+    /// <inheritdoc/>
+    public string Description => "Terrain model of Switzerland and at least 100 km around it, bare ground, 10 m.";
+
+    /// <inheritdoc/>
+    public string Attribution =>
+        "Bundesamt für Landestopografie swisstopo; TINITALY/1.1 (INGV, doi:10.13127/tinitaly/1.1); DGM Österreich, geoland.at; " +
+        "DGM1, Bayerische Vermessungsverwaltung – www.geodaten.bayern.de; DGM1 Baden-Württemberg: LGL, www.lgl-bw.de; " +
+        "RGEAlti, Institut National de l'information géographique et forestière";
+
+    /// <inheritdoc/>
+    public string License => "swisstopo open government data: free, including commercial use; swisstopo and the neighbouring countries' data must be credited.";
+
+    /// <inheritdoc/>
+    public double Resolution => 10;
+
+    /// <inheritdoc/>
+    public SourceScope Scope => SourceScope.Regional;
+
+    /// <inheritdoc/>
+    public bool Covers(GeoBounds bounds) => bounds.Intersects(RegioBounds);
+
+    /// <inheritdoc/>
+    public async Task<int> FillAsync(SampleRequest request, float[] heights, CancellationToken cancellationToken)
+    {
+        if (!Covers(request.Bounds) || await FileAsync(cancellationToken) is not { } tiff) return 0;
+        int image = CogFiles.ChooseImage(tiff, request.Spacing);
+        return await RasterFill.FillHeightsAsync(request, heights, SwissGrid.Instance, new RasterMosaic<float>([new GeoTiffElevationLevel(tiff, image)]),
+            tiff.PixelSize(image).Width, _blocks, cancellationToken);
+    }
+
+    // The model's file, found in the catalog and opened once (again after a failure).
+    private async Task<GeoTiff?> FileAsync(CancellationToken cancellationToken)
+    {
+        Task<GeoTiff?> file;
+        lock (_lock) file = _file ??= Task.Run(async () =>
+        {
+            var asset = (await catalog.FindItemAsync(Collection, Item, CancellationToken.None)).FirstOrDefault();
+            return asset is null ? null : await files.OpenAsync(asset.Href, asset.Updated, CancellationToken.None);
+        });
+        try
+        {
+            return await file.WaitAsync(cancellationToken);
+        }
+        catch (Exception) when (file.IsFaulted)
+        {
+            lock (_lock) if (_file == file) _file = null;
+            throw;
+        }
     }
 }
 
@@ -78,6 +159,9 @@ public sealed class SwissImageSource(CogFiles files, SwissTopoCatalog catalog) :
 
     /// <inheritdoc/>
     public double Resolution => 0.1;
+
+    /// <inheritdoc/>
+    public SourceScope Scope => SourceScope.Regional;
 
     /// <inheritdoc/>
     public bool Covers(GeoBounds bounds) => bounds.Intersects(SwissAlti3DSource.SwissBounds);

@@ -15,10 +15,13 @@ internal sealed class PlaneSource(string id, double resolution, Func<double, dou
     public string Attribution => "© " + id;
     public string License => "test";
     public double Resolution => resolution;
+    public SourceScope Scope { get; init; } = SourceScope.Regional;
+    public TimeSpan Delay { get; init; }
     public bool Covers(GeoBounds bounds) => true;
 
-    public Task<int> FillAsync(SampleRequest request, float[] heights, CancellationToken cancellationToken)
+    public async Task<int> FillAsync(SampleRequest request, float[] heights, CancellationToken cancellationToken)
     {
+        if (Delay > TimeSpan.Zero) await Task.Delay(Delay, cancellationToken);
         int filled = 0;
         for (int row = 0; row < request.Rows; row++)
         {
@@ -31,7 +34,7 @@ internal sealed class PlaneSource(string id, double resolution, Func<double, dou
                 filled++;
             }
         }
-        return Task.FromResult(filled);
+        return filled;
     }
 }
 
@@ -44,6 +47,7 @@ internal sealed class ColorSource(uint color, Func<double, double, bool> covers)
     public string Attribution => "© color";
     public string License => "test";
     public double Resolution => 1;
+    public SourceScope Scope => SourceScope.Regional;
     public bool Covers(GeoBounds bounds) => true;
 
     public Task<int> FillAsync(SampleRequest request, uint[] colors, CancellationToken cancellationToken)
@@ -170,6 +174,55 @@ public class TerrainBuilderTests
         var model = await new TerrainBuilder(sources).BuildAsync(s_settings);
         Assert.True(model.MissingShare > 0);
         Assert.InRange(model.HeightAt(0, 0), 480, 520);
+    }
+
+    // Records every report on the thread it comes from, in order.
+    private sealed class RecordingProgress : IProgress<TerrainProgress>
+    {
+        public System.Collections.Concurrent.ConcurrentQueue<TerrainProgress> Reports { get; } = new();
+
+        public void Report(TerrainProgress value) => Reports.Enqueue(value);
+    }
+
+    [Fact]
+    public async Task Progress_IsReportedWhileATileIsStillBuilding_CoarsestLevelFirst()
+    {
+        var sources = Sources(new PlaneSource("slow", 1, (_, _) => true) { Delay = TimeSpan.FromMilliseconds(300) });
+        var progress = new RecordingProgress();
+        await new TerrainBuilder(sources) { ProgressInterval = TimeSpan.FromMilliseconds(40), Parallelism = 1 }
+            .BuildAsync(s_settings with { Size = 512, Texture = TerrainTexture.None }, progress);
+
+        var reports = progress.Reports.ToList();
+        var beforeFirstTile = reports.TakeWhile(r => r.Tile is null).ToList();
+        Assert.True(beforeFirstTile.Count >= 3);
+        Assert.All(beforeFirstTile, r =>
+        {
+            Assert.Equal(0, r.TilesDone);
+            Assert.Equal(r.LevelCount - 1, r.Level);
+            Assert.Equal(1, r.LevelTileCount);
+        });
+        var last = reports.Last(r => r.Tile != null);
+        Assert.Equal(last.TileCount, last.TilesDone);
+        Assert.Equal(0, last.Level);
+        Assert.Equal(last.LevelTileCount, last.LevelTilesDone);
+    }
+
+    [Fact]
+    public void Sources_RegionalFirst_TheCoarsestThatIsFineEnough_ThenFinerOnes()
+    {
+        var sources = Sources(
+            new PlaneSource("global", 30, (_, _) => true) { Scope = SourceScope.Global },
+            new PlaneSource("regional", 10, (_, _) => true),
+            new PlaneSource("lidar", 0.5, (_, _) => true));
+        var bounds = new GeoBounds(46, 7, 47, 8);
+        string[] Order(double spacing, string? preferred = null) => sources.ElevationFor(bounds, preferred, spacing).Select(s => s.Id).ToArray();
+
+        // Fine levels: the lidar, then the regional model where the lidar ends, the global model last.
+        Assert.Equal(new[] { "lidar", "regional", "global" }, Order(4));
+        // Coarse levels: the regional model has the same detail there, with far less to read.
+        Assert.Equal(new[] { "regional", "lidar", "global" }, Order(10));
+        Assert.Equal(new[] { "regional", "lidar", "global" }, Order(64));
+        Assert.Equal(new[] { "global", "regional", "lidar" }, Order(64, preferred: "global"));
     }
 
     [Fact]

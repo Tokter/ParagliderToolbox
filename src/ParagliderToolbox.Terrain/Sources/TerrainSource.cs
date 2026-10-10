@@ -2,13 +2,23 @@ using ParagliderToolbox.Terrain.Geodesy;
 
 namespace ParagliderToolbox.Terrain.Sources;
 
+/// <summary>What kind of data a source has, which ranks it before its resolution.</summary>
+public enum SourceScope
+{
+    /// <summary>Measured national or regional data (lidar terrain models, aerial images): always preferred.</summary>
+    Regional,
+
+    /// <summary>Worldwide data (satellite surface models and images): where there is nothing better.</summary>
+    Global,
+}
+
 /// <summary>
 /// Where terrain data comes from: a dataset with its coverage, resolution and the terms it may be used under.
 /// </summary>
 /// <remarks>
-/// The builder asks the sources that may cover an area in order of resolution (finest first, a preferred one before
-/// all), each filling the samples the ones before left empty, so every point gets the best data there is: a terrain
-/// across the Swiss border takes swissALTI3D in Switzerland and Copernicus beyond. To add a dataset, implement
+/// The builder asks the sources that may cover an area in order (see <see cref="TerrainSources"/>), each filling the
+/// samples the ones before left empty, so every point gets the best data there is: a terrain across the Swiss border
+/// takes swissALTI3D in Switzerland and swissALTIRegio or Copernicus beyond. To add a dataset, implement
 /// <see cref="IElevationSource"/> or <see cref="IImagerySource"/> and add it to <see cref="TerrainSources"/>.
 /// </remarks>
 public interface ITerrainSource
@@ -28,8 +38,11 @@ public interface ITerrainSource
     /// <summary>Gets the terms of use, in short.</summary>
     string License { get; }
 
-    /// <summary>Gets the finest ground resolution of the data (m), which ranks the sources.</summary>
+    /// <summary>Gets the finest ground resolution of the data (m), which ranks the sources of a scope.</summary>
     double Resolution { get; }
+
+    /// <summary>Gets whether the data is regional (preferred) or worldwide.</summary>
+    SourceScope Scope { get; }
 
     /// <summary>Gets whether the source may have data in <paramref name="bounds"/> (a quick check: it may still have gaps).</summary>
     bool Covers(GeoBounds bounds);
