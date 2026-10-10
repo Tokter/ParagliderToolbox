@@ -4,7 +4,7 @@ Guidance for Claude Code when working in this repository.
 
 ## What this is
 
-Paraglider Toolbox: a desktop app (C#, .NET 9) with tools for paraglider simulation and games. The UI is built with
+Paraglider Toolbox: a desktop app (C#, .NET 10) with tools for paraglider simulation and games. The UI is built with
 [Atelier](https://github.com/Tokter/Atelier), the author's own UI framework, which is expected as a sibling checkout at
 `..\Atelier` (override with `/p:AtelierRoot=...`). Atelier's own `CLAUDE.md` and `README.md` describe its controls,
 markup API, property system, commands and workspaces; read them before using an Atelier feature for the first time.

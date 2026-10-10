@@ -3,7 +3,7 @@
     <!-- The Atelier UI framework is expected next to this repository (D:\GitHub\Atelier); override with /p:AtelierRoot=... -->
     <AtelierRoot Condition="'$(AtelierRoot)' == ''">$(MSBuildThisFileDirectory)..\Atelier\</AtelierRoot>
     <AtelierSrc>$(AtelierRoot)src\</AtelierSrc>
-    <TargetFramework>net9.0</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
   </PropertyGroup>
