@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- The terrain generator without UI: coordinate systems, the elevation and imagery sources (with their own Cloud
+       Optimized GeoTIFF reader and download cache), the tiled level-of-detail layout, the builder and the exporters. -->
+  <PropertyGroup>
+    <RootNamespace>ParagliderToolbox.Terrain</RootNamespace>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <!-- Sampling and decoding are numeric hot loops: optimized even in Debug builds. -->
+    <Optimize>true</Optimize>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="SkiaSharp" Version="4.152.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The glTF writer. -->
+    <ProjectReference Include="..\ParagliderToolbox.Paraglider\ParagliderToolbox.Paraglider.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="ParagliderToolbox.Tests" />
+  </ItemGroup>
+
+</Project>

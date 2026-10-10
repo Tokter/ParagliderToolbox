@@ -158,6 +158,56 @@ simulation algorithm for game developers; keep it in sync with the simulator.
   `CurveEditor`/`CurvePropertyEditor`, `PolarDetailView` and `PolarChart` (plots a polar on Atelier.Charts' `XYChart`; also used live while recording). The 3D view is Atelier's `Atelier.Graphics3D.Viewport3D` (OpenGL on the window's
   context, composited into Skia).
 
+## Terrain Generator
+
+Terrains of real places, for paragliding games. Two parts: `src/ParagliderToolbox.Terrain` (UI-free; references the
+paraglider library only for `GltfWriter`) and `src/ParagliderToolbox/Modules/Terrain`. `docs/TerrainFormat.md`
+documents the tile set export for game developers; keep it in sync with the layout and the exporter.
+
+- **Frame** (`Geodesy`): `LocalFrame`, a transverse Mercator (`TransverseMercator`, Krüger to n⁴, Newton for the
+  latitude) centered on the terrain's center; +X east, +Y up (heights above sea level, not shifted), +Z south.
+  `ICoordinateSystem` for the sources' systems: `GeographicCoordinates`, `WebMercator`, `SwissGrid` (LV95 with
+  swisstopo's ~1 m approximate formulas). `GeoPoint.TryParse` reads decimal, DMS and Swiss coordinates.
+- **Data** (`Data`): `DataCache` (whole resources with a max age and stale fallback when offline, 404s remembered;
+  byte ranges of large files in 64 KiB chunk files, the folder naming the size: a terrain reads the headers of hundreds
+  of files; consecutive misses in one request; six requests at once, retries) and `GeoTiff`, an own COG reader (TIFF/BigTIFF, tiles/strips, none/LZW/Deflate/PackBits/JPEG with shared tables,
+  both predictors, GeoKeys, GDAL no-data; overviews listed fine to coarse). No GDAL on purpose: no native
+  dependencies, and range reads fetch only the tiles and overviews a terrain needs.
+- **Sampling** (`Sampling`): `RasterLevel<T>` (one image of a file or one map-tile zoom, read in blocks; heights as
+  float with NaN, colors as RGBA uint with alpha 0 for none), `BlockCache<T>` (LRU, shared loads), `RasterMosaic<T>`
+  (files side by side: bilinear across their edges), `RasterFill` (projects a `SampleRequest` into a system, exact on
+  every 8th sample, loads the blocks, interpolates; averages up to 4 × 4 points where data is much finer).
+- **Sources** (`Sources`): `IElevationSource`/`IImagerySource.FillAsync` fill only the still empty samples;
+  `TerrainSources` orders them per area (preferred first, then finest), so every point takes the best data there is.
+  `SwissAlti3DSource`/`SwissImageSource` (`SwissTopoCatalog`: the STAC API v1 in 8 km cells, the newest version per
+  1 km tile; the asset by gsd, then the overview by spacing), `CopernicusDemSource` (AWS bucket, 1° COGs; missing
+  tiles are sea at 0), `Sentinel2CloudlessSource` (EOX's 2016 layer, the only CC BY one; `WebTileLevel`). Measured:
+  Copernicus is a surface model, median 1–4 m and in forests 15–25 m above swissALTI3D.
+- **Layout** (`TerrainLayout`): a quadtree of tiles with `TileSamples` (2^k + 1) per side at every level, each level
+  half as fine; the size rounds to whole level-0 tiles (the resolution stays as set); coarser tiles are cut back where
+  the area ends; automatic levels reach one root; `DetailSize` splits tiles only near the center (the finest level
+  within it, each coarser twice as far). A split tile has all its children.
+- **Builder** (`TerrainBuilder`): per tile, coarse levels first, a few at once: heights with a one-sample border (from
+  the neighbors, for normals) from the ordered sources; where a finer source ends, its heights ease into the next over
+  `BlendDistance` (200 m; the coverage comes from a lattice aligned to the frame and reaching beyond the tile, so
+  neighbors agree); holes take their neighbors' heights; the texture from the imagery sources, `ElevationColors`
+  (height and slope) where there is none, as JPEG. Each level samples the sources at its own spacing (their overviews).
+- **Meshing/Export**: `TerrainMesh` (smooth with skirts 4 × the spacing deep, or faceted with per-face colors),
+  `TerrainExporter` (tile folder: `terrain.json`, glb per tile with embedded JPEG, 16-bit PNG or RAW heightmaps,
+  textures, `ATTRIBUTION.txt`; or the leaves down to a level as one glb), `Heightmaps` (own 16-bit PNG writer).
+  `docs/images/render_terrain.py` renders an exported glb in Blender (the README's terrain renders; cameras by
+  latitude/longitude from the root node's extras). README images of swisstopo data carry "© swisstopo".
+- **Module**: `TerrainNode` (the settings as [Inspectable] properties on an immutable `TerrainSettings`; `Coordinates`
+  parses pasted positions; source choices saved as ids, edited by `SourceChoiceEditor` listing the registered sources;
+  read-only summary from the layout), `NewTerrainOptions`/`NewTerrainView` (location, sites, Arcade/Game/Simulator
+  styles), `TerrainPreview` (builds on first show and on Generate, not on every edit: downloads; tiles appear as they
+  come; `IsOutdated`), `TerrainScene` (LOD selection from the roots by projected sample spacing, meshes made within a
+  30 ms budget per frame, half-texel UV inset because the viewport's textures repeat), `TerrainDetailView`,
+  `TerrainActions` (exports reuse the preview's model when its settings match, else build; clear the cache).
+  The cache is `%LOCALAPPDATA%\ParagliderToolbox\TerrainCache` (`PARAGLIDERTOOLBOX_TERRAIN_CACHE`). Tests use fake
+  sources and synthetic TIFFs (`TestTiff`, with an LZW encoder as libtiff writes it); nothing in the tests uses the
+  network.
+
 ## Adding a feature
 
 1. Node class: derive from `ProjectNode` or `ContainerNode` (never from another `[Inspectable]` class), mark it

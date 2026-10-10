@@ -10,7 +10,7 @@ namespace ParagliderToolbox.Paraglider.Export;
 /// and animations. Matrices are System.Numerics row-vector matrices; glTF's column-major layout of the column-vector
 /// matrix is the same memory, so they are written element by element (M11, M12, ...).
 /// </summary>
-internal sealed class GltfWriter
+public sealed class GltfWriter
 {
     private readonly MemoryStream _bin = new();
     private readonly JsonArray _bufferViews = [];
@@ -118,10 +118,11 @@ internal sealed class GltfWriter
             ["componentType"] = Float, ["count"] = matrices.Length, ["type"] = "MAT4",
         });
 
-    public int AddImage(byte[] png, string name)
+    /// <summary>Embeds an image (PNG, or JPEG with <paramref name="mimeType"/> <c>"image/jpeg"</c>).</summary>
+    public int AddImage(byte[] data, string name, string mimeType = "image/png")
     {
-        int view = AddBufferView(png);
-        return Add(_images, new JsonObject { ["bufferView"] = view, ["mimeType"] = "image/png", ["name"] = name });
+        int view = AddBufferView(data);
+        return Add(_images, new JsonObject { ["bufferView"] = view, ["mimeType"] = mimeType, ["name"] = name });
     }
 
     public int AddTexture(int image, bool repeat = false)

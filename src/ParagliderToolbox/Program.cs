@@ -6,6 +6,7 @@ using ParagliderToolbox.Framework.Settings;
 using ParagliderToolbox.Framework.Views;
 using ParagliderToolbox.Modules.Core;
 using ParagliderToolbox.Modules.Paraglider;
+using ParagliderToolbox.Modules.Terrain;
 
 namespace ParagliderToolbox;
 
@@ -16,6 +17,7 @@ internal static class Program
     [
         new CoreModule(),
         new ParagliderModule(),
+        new TerrainModule(),
     ];
 
     private static void Main(string[] args)

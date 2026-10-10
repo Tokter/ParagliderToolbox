@@ -134,6 +134,56 @@ blender -b --python docs/images/render_flight.py -- flight.glb out encode
 | ![Front three-quarter view](docs/images/render-blue-hero.jpg) | ![Stripes pattern in evening light](docs/images/render-sunset-evening.jpg) |
 | ![Backlit from behind, seen from below](docs/images/render-blue-backlit.jpg) | ![Leading edge: inlets, shark nose and ballooned cells](docs/images/render-blue-nose.jpg) |
 
+## Terrain Generator
+
+![The terrain generator: Interlaken between Lake Thun and Lake Brienz, from swisstopo's lidar terrain model and aerial images (data © swisstopo)](docs/images/ui-terrain.png)
+
+*Interlaken, 10 km at 4 m (the Game style): 539 tiles in 6 levels, built in 4.6 s from the cache. Data: © swisstopo.*
+
+Add a terrain (Ctrl+Shift+T, or Edit > Add): paste a location (latitude, longitude as maps copy them, degrees with
+N/E, or Swiss coordinates) or pick a paragliding site, and a style:
+
+- **Arcade**: low poly, a few kilometers: faceted triangles in the colors of the aerial image.
+- **Game**: about 10 km, detailed and textured.
+- **Simulator**: 30 km, full detail (2 m) within 3 km of the center and coarser further out.
+
+The detail view builds it (downloading only the parts of the data it needs, then from the cache) and shows the tiles
+as they come in, coarse to fine; the camera chooses the levels of detail. Every point takes the finest data there is:
+
+| Where | Elevation | Imagery |
+|---|---|---|
+| Switzerland | swissALTI3D (swisstopo), lidar, bare ground, 0.5 m | SWISSIMAGE (swisstopo), 10 cm |
+| Everywhere else | Copernicus DEM GLO-30, 30 m | Sentinel-2 cloudless 2016 (EOX), 10 m |
+
+All four may be used commercially; they require credit, which every export carries (`ATTRIBUTION.txt`). Where the
+Swiss data ends, its heights ease into Copernicus over 200 m.
+
+The properties set the size, the finest resolution, the samples per tile (2^k + 1, as engines' heightmaps need), the
+levels of detail (a quadtree: each level half as fine, a quarter as many tiles), a full detail area for large
+terrains, the texture and the shading. Changing them marks the terrain out of date; Generate (G) builds it again.
+**Export terrain tiles** writes a tile set for a game: per tile a glTF mesh (with skirts that hide the cracks between
+levels), a 16-bit heightmap (PNG for Unreal and Godot, RAW for Unity) and a JPEG texture, and `terrain.json`, the
+quadtree with its frame and height range ([docs/TerrainFormat.md](docs/TerrainFormat.md)). **Export terrain glTF**
+writes the most detailed tiles as one file, for Blender.
+
+| In the detail view | Action |
+|---|---|
+| G | Generate (again to cancel) |
+| L / T | Tint the levels of detail / show the texture |
+| Middle drag / Shift+middle drag / wheel, Home, Shift+Z | Orbit / pan / zoom, frame, wireframe |
+
+### Terrain renders
+
+A terrain exported with Export terrain glTF and rendered in Blender 4.4 with Cycles: 20 km around the Lauterbrunnen
+valley (center 46.565, 7.930; 4 m, 129 samples per tile, 512 px textures, full detail within 6 km; 394 tiles of three
+levels, 12.7M triangles). The heights and textures come straight from the export; the sky, sun and haze are added in
+Blender. `docs/images/render_terrain.py` renders it again, placing the camera by latitude and longitude:
+`blender -b --python docs/images/render_terrain.py -- terrain.glb render.jpg jungfrau 128 1`. Data: © swisstopo.
+
+| | |
+|---|---|
+| ![Eiger, Mönch and Jungfrau above the Lauterbrunnen valley, as a paraglider sees them](docs/images/render-terrain-jungfrau.jpg) | ![The Eiger, Mönch and Jungfrau wall from the west side of the Lauterbrunnen valley](docs/images/render-terrain-wall.jpg) |
+
 ## Building
 
 Atelier is referenced as source and expected next to this repository:
@@ -149,7 +199,8 @@ dotnet test
 dotnet run --project src/ParagliderToolbox
 ```
 
-Settings (theme, recent files, shortcuts, layout) are kept in `%APPDATA%\ParagliderToolbox`.
+Settings (theme, recent files, shortcuts, layout) are kept in `%APPDATA%\ParagliderToolbox`; downloaded terrain data
+in `%LOCALAPPDATA%\ParagliderToolbox\TerrainCache` (Tools > Clear terrain cache).
 
 ## Extending
 

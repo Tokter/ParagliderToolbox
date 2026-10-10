@@ -20,6 +20,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\ParagliderToolbox\ParagliderToolbox.csproj" />
     <ProjectReference Include="..\..\src\ParagliderToolbox.Paraglider\ParagliderToolbox.Paraglider.csproj" />
+    <ProjectReference Include="..\..\src\ParagliderToolbox.Terrain\ParagliderToolbox.Terrain.csproj" />
     <!-- Test node classes are [Inspectable] too. -->
     <ProjectReference Include="$(AtelierSrc)Atelier.Generators\Atelier.Generators.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
   </ItemGroup>

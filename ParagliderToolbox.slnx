@@ -2,6 +2,7 @@
   <Folder Name="/src/">
     <Project Path="src/ParagliderToolbox/ParagliderToolbox.csproj" />
     <Project Path="src/ParagliderToolbox.Paraglider/ParagliderToolbox.Paraglider.csproj" />
+    <Project Path="src/ParagliderToolbox.Terrain/ParagliderToolbox.Terrain.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/ParagliderToolbox.Tests/ParagliderToolbox.Tests.csproj" />
