@@ -391,6 +391,7 @@ public sealed partial class AirflowPreview : ObservableObject, IDisposable
 
     partial void OnSliceHeightChanged(double value)
     {
+        _overlays.Particles.Height = (float)value;
         UpdateOverlays();
         ShowFrame();
         ShowSky();
@@ -709,7 +710,7 @@ public sealed partial class AirflowPreview : ObservableObject, IDisposable
     [RelayCommand]
     [property: Command("SliceDown", Group, Label = "Lower the slice", Icon = MaterialIcons.ArrowDownward,
         Description = "Lower the slice by 100 m above the ground", DefaultKeybinding = "PageDown")]
-    private void SliceDown() => SliceHeight = Math.Max(20, SliceHeight - 100);
+    private void SliceDown() => SliceHeight = Math.Max(0, SliceHeight - 100);
 
     #endregion
 

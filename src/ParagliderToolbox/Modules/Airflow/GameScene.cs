@@ -234,10 +234,9 @@ public sealed class GameScene
             for (int i = 0; i < columns; i++)
             {
                 double x = field.X0 + i * field.CellSize, z = field.Z0 + k * field.CellSize;
-                float y = ground(x, z) + (float)height;
                 int n = k * columns + i;
-                points[n] = new Vector3((float)x, y, (float)z);
-                lift[n] = field.BaseWindAt(x, y, z).Y;
+                points[n] = new Vector3((float)x, ground(x, z) + Math.Max(AirflowScene.SliceClearance, (float)height), (float)z);
+                lift[n] = field.BaseWindAt(x, AirflowScene.AirGround(field, ground, x, z) + height, z).Y;
                 colors[n] = LiftColor(lift[n]);
             }
         });

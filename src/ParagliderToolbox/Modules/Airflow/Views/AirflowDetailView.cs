@@ -44,6 +44,8 @@ public sealed class AirflowDetailView : KeybindingHandler
         AdditionalScopes.Add(new KeybindingScope(TerrainFlight.Group, _viewport.Flight));
         _viewport.Animate = dt => (_preview.ShowParticles && _preview.Overlays.Particles.Step(dt)) | _preview.Advance(dt);
         _preview.SectionCenter = () => new Vector2(_viewport.Viewport.Camera.Target.X, _viewport.Viewport.Camera.Target.Z);
+        // The particles start where the camera looks, as far around as it sees.
+        _preview.Overlays.Particles.Focus = () => (new Vector2(_viewport.Viewport.Camera.Target.X, _viewport.Viewport.Camera.Target.Z), 1.2f * _viewport.Viewport.Camera.Distance);
         _preview.TerrainShown += (_, _) => _viewport.Frame();
         _preview.OverlaysChanged += (_, _) => _viewport.RequestRender();
 
@@ -92,7 +94,7 @@ public sealed class AirflowDetailView : KeybindingHandler
             .ToolTip("What the ground map shows")
             .BindSelectedIndex(_preview, p => (int)p.GroundMap, (p, v) => p.GroundMap = (GroundMap)Math.Max(0, v))
             .BindIsVisible(_preview, p => p.ShowGround);
-        var height = new Slider().Range(20, 2500).SnapTo(10).Width(150).VerticalAlignment(VerticalAlignment.Center)
+        var height = new Slider().Range(0, 2500).SnapTo(10).Width(150).VerticalAlignment(VerticalAlignment.Center)
             .ToolTip("The slice's height above the ground, where the streamlines start (Page Up, Page Down)")
             .BindValue(_preview, p => (float)p.SliceHeight, (p, v) => p.SliceHeight = v);
         var heightText = new TextBlock().BodySmall().VerticalAlignment(VerticalAlignment.Center).Width(110)

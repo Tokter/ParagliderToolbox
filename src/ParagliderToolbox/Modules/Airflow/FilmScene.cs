@@ -94,7 +94,7 @@ public sealed class FilmScene
             for (int a = 0; a < nx; a++)
             {
                 double x = film.X0 + a * step, z = film.Z0 + b * step;
-                positions[b * nx + a] = new Vector3((float)x, ground(x, z) + (float)height, (float)z);
+                positions[b * nx + a] = new Vector3((float)x, ground(x, z) + Math.Max(AirflowScene.SliceClearance, (float)height), (float)z);
                 float w = frame.LiftAt(film.Column(x, z), height);
                 colors[b * nx + a] = new Vector4(AirflowColors.Lift.At(w), 0.08f + 0.67f * Math.Min(1, Math.Abs(w) / 2.5f));
             }

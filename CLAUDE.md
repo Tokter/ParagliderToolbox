@@ -359,7 +359,11 @@ solver on a graphics card, ILGPU) and `src/ParagliderToolbox/Modules/Airflow` (r
   `SunMarker` (the sun disc and its rays), `AirflowScene` (overlay geometry built off the UI thread: streamlines, slice,
   section, thermal tubes or the census' sites (`ConvectionGeometry.Sites`), cloud boxes, ground map, trigger pins;
   translucent overlays use a base alpha of 254 to go into the transparent pass, vertex alpha fades), `AirflowParticles`
-  (3000 trails, 60× the wind, a trail point every 0.08 s), `AirflowColors` (the scales and legends), `AirflowActions`
+  (3000 trails, 60× the wind, a trail point every 0.08 s; they start in a band around the slice's height, 1–10 m up at
+  0, and around the camera's target as far as 1.2 × its distance, starting again beyond twice that, so a close look is
+  dense; heights above the ground count from `AirflowScene.AirGround`: the field's smoothed columns stand above the
+  terrain at a cliff's foot, and the wind below them is still; slices are drawn at least `SliceClearance` up),
+  `AirflowColors` (the scales and legends), `AirflowActions`
   (export).
 
 ## Adding a feature

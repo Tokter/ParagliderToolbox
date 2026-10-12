@@ -130,6 +130,19 @@ public sealed class AirflowScene
             options.Ground ? TriggerGeometry(field, Ground, tops: true) : empty);
     }
 
+    /// <summary>
+    /// Gets the ground the air starts at: the terrain's (<paramref name="ground"/>, NaN where it has none), or the field's
+    /// where that is higher (its columns' mean, above the terrain at the foot of a cliff), where the wind is still.
+    /// </summary>
+    internal static float AirGround(AirflowField field, Func<double, double, float>? ground, double x, double z)
+    {
+        float terrain = ground?.Invoke(x, z) ?? float.NaN, columns = field.GroundAt(x, z);
+        return float.IsNaN(terrain) ? columns : Math.Max(terrain, columns);
+    }
+
+    /// <summary>The least height a slice is drawn above the terrain (m), so it doesn't flicker in it at 0.</summary>
+    internal const float SliceClearance = 1;
+
     private static Vector4 Rgba(Vector3 color, float alpha) => new(color, alpha);
 
     // Seeds on a grid at the slice's height, traced both ways; colored by the vertical wind along them.
@@ -145,7 +158,7 @@ public sealed class AirflowScene
         {
             for (double x = field.X0 + spacing / 2; x < field.X0 + width; x += spacing)
             {
-                var start = new Vector3((float)x, ground(x, z) + (float)options.SliceHeight, (float)z);
+                var start = new Vector3((float)x, AirGround(field, ground, x, z) + (float)options.SliceHeight, (float)z);
                 foreach (bool backward in new[] { false, true })
                 {
                     var line = Streamlines.Trace(field, start, length, step, backward);
@@ -180,9 +193,9 @@ public sealed class AirflowScene
             for (int a = 0; a < nx; a++)
             {
                 double x = field.X0 + a * step, z = field.Z0 + b * step;
-                float y = ground(x, z) + (float)options.SliceHeight;
+                float y = ground(x, z) + Math.Max(SliceClearance, (float)options.SliceHeight);
                 positions[b * nx + a] = new Vector3((float)x, y, (float)z);
-                colors[b * nx + a] = SampleColor(field, options.Quantity, scale, x, y, z);
+                colors[b * nx + a] = SampleColor(field, options.Quantity, scale, x, AirGround(field, ground, x, z) + options.SliceHeight, z);
             }
         });
         return new OverlayGeometry(positions, Grid(nx, nz), colors);
