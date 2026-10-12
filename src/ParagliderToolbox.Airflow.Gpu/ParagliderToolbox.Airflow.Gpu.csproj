@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- The airflow solver on a graphics card: the same algorithm as ParagliderToolbox.Airflow's AirflowSolver, as ILGPU
+       kernels (CUDA on NVIDIA cards, OpenCL on others; ILGPU's CPU accelerator runs them anywhere, for tests). -->
+  <PropertyGroup>
+    <RootNamespace>ParagliderToolbox.Airflow.Gpu</RootNamespace>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <Optimize>true</Optimize>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="ILGPU" Version="1.5.3" />
+    <PackageReference Include="ILGPU.Algorithms" Version="1.5.3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\ParagliderToolbox.Airflow\ParagliderToolbox.Airflow.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="ParagliderToolbox.Tests" />
+    <!-- ILGPU's CPU accelerator runs the kernels through types it emits into this dynamic assembly. -->
+    <InternalsVisibleTo Include="ILGPURuntime" />
+  </ItemGroup>
+
+</Project>

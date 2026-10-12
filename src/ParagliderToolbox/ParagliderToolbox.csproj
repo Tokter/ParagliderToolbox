@@ -26,6 +26,8 @@
     <ProjectReference Include="$(AtelierSrc)Atelier.Charts\Atelier.Charts.csproj" />
     <ProjectReference Include="..\ParagliderToolbox.Paraglider\ParagliderToolbox.Paraglider.csproj" />
     <ProjectReference Include="..\ParagliderToolbox.Terrain\ParagliderToolbox.Terrain.csproj" />
+    <ProjectReference Include="..\ParagliderToolbox.Airflow\ParagliderToolbox.Airflow.csproj" />
+    <ProjectReference Include="..\ParagliderToolbox.Airflow.Gpu\ParagliderToolbox.Airflow.Gpu.csproj" />
     <!-- [Command] metadata and [Inspectable] property descriptors are generated at compile time. -->
     <ProjectReference Include="$(AtelierSrc)Atelier.Generators\Atelier.Generators.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
   </ItemGroup>

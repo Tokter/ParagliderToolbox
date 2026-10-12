@@ -105,6 +105,12 @@ public sealed class NodeTypeRegistry
         return type;
     }
 
+    /// <summary>
+    /// Gets the ids of node types that are no longer made: project files may still hold such nodes, and loading drops
+    /// them (with their children) instead of refusing the file.
+    /// </summary>
+    public ISet<string> Retired { get; } = new HashSet<string>(StringComparer.Ordinal);
+
     /// <summary>Gets the type registered under <paramref name="id"/>, or <c>null</c>.</summary>
     public NodeType? Find(string id) => _byId.GetValueOrDefault(id);
 

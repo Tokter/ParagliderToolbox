@@ -103,6 +103,7 @@ public sealed class ProjectSerializer
             }
 
             // Older formats are upgraded here, one version at a time, before the tree is read.
+            if (_types.Retired.Count > 0 && file["project"] is JsonObject root) DropRetired(root);
             var project = file["project"]?.Deserialize<Project>(Options)
                 ?? throw new ProjectFileException("The file doesn't contain a project.");
             return project;
@@ -110,6 +111,18 @@ public sealed class ProjectSerializer
         catch (JsonException e)
         {
             throw new ProjectFileException($"The project file is damaged or uses an unknown kind of object: {e.Message}", e);
+        }
+    }
+
+    // Removes the nodes of retired types (see NodeTypeRegistry.Retired) from a node's children, at every depth.
+    private void DropRetired(JsonObject node)
+    {
+        if (node["children"] is not JsonArray children) return;
+        for (int i = children.Count - 1; i >= 0; i--)
+        {
+            if (children[i] is not JsonObject child) continue;
+            if (child[TypeDiscriminator] is JsonValue type && type.TryGetValue(out string? id) && _types.Retired.Contains(id)) children.RemoveAt(i);
+            else DropRetired(child);
         }
     }
 

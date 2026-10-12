@@ -197,6 +197,7 @@ public sealed class DataCache
     {
         // The chunks being downloaded, so readers wanting the same chunk wait for one request.
         private readonly ConcurrentDictionary<long, TaskCompletionSource<byte[]>> _inFlight = new();
+        private int _named;
 
         public string Name => url;
 
@@ -322,9 +323,10 @@ public sealed class DataCache
                     }
                     index = end + 1;
                 }
-                if (!File.Exists(Path.Combine(folder, "url.txt")))
+                // The file's name for people, once: parallel downloads of one file finish together.
+                if (Interlocked.Exchange(ref _named, 1) == 0 && !File.Exists(Path.Combine(folder, "url.txt")))
                 {
-                    await File.WriteAllTextAsync(Path.Combine(folder, "url.txt"), url, cancellationToken);
+                    await WriteAtomicAsync(Path.Combine(folder, "url.txt"), Encoding.UTF8.GetBytes(url), cancellationToken);
                 }
             }
             catch (Exception e) when (e is not OperationCanceledException)

@@ -54,6 +54,12 @@ public partial class TerrainNode : ProjectNode
         _settings = settings;
     }
 
+    /// <summary>Gets the node types a terrain holds: modules add theirs (the airflow simulations over it).</summary>
+    public static ISet<Type> ChildTypes { get; } = new HashSet<Type>();
+
+    /// <inheritdoc/>
+    public override bool CanContain(Type childType) => ChildTypes.Contains(childType);
+
     /// <summary>Gets a number that changes whenever a setting changes.</summary>
     [InspectableIgnore]
     [JsonIgnore]

@@ -3,6 +3,7 @@ using Atelier.Controls;
 using Atelier.Markup;
 using ParagliderToolbox.Framework.Modules;
 using ParagliderToolbox.Modules.Terrain.Views;
+using ParagliderToolbox.Terrain;
 using ParagliderToolbox.Terrain.Data;
 using ParagliderToolbox.Terrain.Sources;
 
@@ -53,6 +54,18 @@ public sealed class TerrainModule : IToolboxModule
             .Add(MenuRegistry.Tools, () => new MenuItem { DataContext = actions }.Command(actions.ExportTilesCommand))
             .Add(MenuRegistry.Tools, () => new MenuItem { DataContext = actions }.Command(actions.ExportGlbCommand))
             .Add(MenuRegistry.Tools, () => new MenuItem { DataContext = actions }.Command(actions.ClearCacheCommand));
+    }
+
+    /// <summary>
+    /// Gets the built terrain of <paramref name="node"/>: its preview's when that is of the current settings, else built
+    /// (from the download cache where it can).
+    /// </summary>
+    public async Task<TerrainModel> ModelAsync(TerrainNode node, IProgress<TerrainProgress>? progress = null, CancellationToken cancellationToken = default)
+    {
+        var settings = node.Snapshot();
+        if (_previews.TryGetValue(node, out var preview) && preview.Model is { } shown && shown.Settings == settings) return shown;
+        var builder = _actions?.Builder ?? new TerrainBuilder(Sources);
+        return await Task.Run(() => builder.BuildAsync(settings, progress, cancellationToken), cancellationToken);
     }
 
     /// <summary>Asks for the location, style and name of a new terrain; returns it, or <c>null</c> when canceled.</summary>

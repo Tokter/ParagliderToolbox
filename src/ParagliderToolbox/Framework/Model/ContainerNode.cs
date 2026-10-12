@@ -22,9 +22,15 @@ public abstract class ContainerNode : ProjectNode
     [InspectableProperty("Items", "General", Order = -50, IsReadOnly = true, Description = "The number of nodes directly in here.")]
     public int ItemCount => Children.Count;
 
+    /// <summary>
+    /// Gets the node types only particular parents hold (whose <see cref="ProjectNode.CanContain"/> says so), which
+    /// containers don't take: modules add theirs (an airflow belongs under its terrain).
+    /// </summary>
+    public static ISet<Type> PlacedTypes { get; } = new HashSet<Type>();
+
     /// <inheritdoc/>
-    /// <remarks>Containers accept every node except a project.</remarks>
-    public override bool CanContain(Type childType) => !typeof(Project).IsAssignableFrom(childType);
+    /// <remarks>Containers accept every node except a project and the <see cref="PlacedTypes"/>.</remarks>
+    public override bool CanContain(Type childType) => !typeof(Project).IsAssignableFrom(childType) && !PlacedTypes.Contains(childType);
 
     private void OnContainerChildrenChanged(object? sender, NotifyCollectionChangedEventArgs e) => OnPropertyChanged(nameof(ItemCount));
 }

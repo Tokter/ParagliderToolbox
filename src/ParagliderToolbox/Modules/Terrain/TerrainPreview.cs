@@ -40,7 +40,6 @@ public sealed partial class TerrainPreview : ObservableObject, IDisposable
     [ObservableProperty] private string _status = "";
     [ObservableProperty] private string _sources = "";
     [ObservableProperty] private string _view = "";
-    [ObservableProperty] private string _flightInfo = "";
     [ObservableProperty] private string _statusNote = "";
     [ObservableProperty] private bool _isOutdated;
     [ObservableProperty] private bool _showLevels;
@@ -202,26 +201,6 @@ public sealed partial class TerrainPreview : ObservableObject, IDisposable
     private void ToggleTexture() => Textured = !Textured;
 
     #endregion
-
-    /// <summary>Chooses the tiles for the camera; returns whether another frame should choose again (meshes still to make).</summary>
-    public bool UpdateLevels(OrbitCamera camera, float viewportHeight, TerrainFlight? flight = null)
-    {
-        _scene.Select(camera.Position, camera.FieldOfView, viewportHeight);
-        View = string.Create(CultureInfo.CurrentCulture, $"showing {_scene.ShownTiles} tiles, {_scene.ShownTriangles / 1000.0:0.#}k triangles");
-        // Where the camera is, as a pilot reads it: the altitude and the height above the ground (and the speed, flying).
-        string info = "";
-        if (flight != null && _scene.ShownTiles > 0)
-        {
-            info = string.Create(CultureInfo.CurrentCulture, $"{camera.Position.Y:#,0} m");
-            if (_scene.HeightAt(camera.Position.X, camera.Position.Z) is not null)
-            {
-                info += string.Create(CultureInfo.CurrentCulture, $" · {flight.HeightAboveGround:#,0} m above ground");
-            }
-            if (flight.IsMoving) info += string.Create(CultureInfo.CurrentCulture, $" · {flight.Speed * 3.6f:#,0} km/h");
-        }
-        FlightInfo = info;
-        return _scene.NeedsAnotherPass;
-    }
 
     // Reports on the UI thread (the builder runs on worker threads).
     private sealed class UiProgress(Action<TerrainProgress> report) : IProgress<TerrainProgress>

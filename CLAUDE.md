@@ -23,8 +23,9 @@ dotnet run --project src/ParagliderToolbox     # the app; PARAGLIDERTOOLBOX_SETT
 
 - **Model** (`Framework/Model`): every object in a project is a `ProjectNode` (`ObservableObject`): `Id`, `Name`,
   `Parent`, `Children`. `ContainerNode` holds children (`FolderNode`, `Project`). Property changes bubble up as
-  `SubtreeChanged`; `ProjectDocument` uses that for `IsModified`. `NodeTypeRegistry` maps each node class to a stable
-  type id (saved as `$type`), display name, icon and category.
+  `SubtreeChanged`; `ProjectDocument` uses that for `IsModified` (a computed value that changes while the node doesn't,
+  e.g. an estimate once the graphics card is found: `OnComputedPropertyChanged`). `NodeTypeRegistry` maps each node class
+  to a stable type id (saved as `$type`), display name, icon and category; loading drops nodes of `Retired` ids.
 - **Serialization** (`Framework/Serialization/ProjectSerializer`): System.Text.Json with a contract modifier. Saved:
   public get/set properties (camelCase) and `Children`; get-only properties are dropped automatically; `[JsonIgnore]`
   for the rest. Children are polymorphic through the registry's type ids. File = `{ format, version, project }`;
@@ -34,7 +35,8 @@ dotnet run --project src/ParagliderToolbox     # the app; PARAGLIDERTOOLBOX_SETT
   modules fill in `IToolboxModule.Register`: `NodeTypes`, `Views` (Atelier `AreaEditorRegistry`: the views workspace
   areas can show), `DetailViews` (object specific UI per node class, resolved by base type), `PropertyEditors`
   (custom `PropertyGrid` editors), `JsonConverters`, `Menus` (main menu items), `DefaultWorkspaces`,
-  `WorkspaceTemplates`. Modules are listed in `Program.Modules`.
+  `WorkspaceTemplates`. Modules are listed in `Program.Modules` (one that needs another takes it in its constructor:
+  the airflow module the terrain module).
 - **Commands** (`Framework/Commands`): `[RelayCommand]` + `[property: Command(name, group, ...)]` on view models; the
   Atelier generator registers them, so menus, the command palette and the keybinding editor pick them up. Groups:
   `Application` (`ShellViewModel`: files, palette, shortcuts, theme, layout), `Project` (`ProjectCommands`: add/rename/
@@ -212,16 +214,146 @@ documents the tile set export for game developers; keep it in sync with the layo
   styles), `TerrainPreview` (builds on first show and on Generate, not on every edit: downloads; tiles appear as they
   come; `IsOutdated`; the status line names the level, tiles and downloads, the progress bar is indeterminate until
   the first tile), `TerrainScene` (LOD selection from the roots by projected sample spacing, meshes made within a
-  30 ms budget per frame, half-texel UV inset because the viewport's textures repeat), `TerrainDetailView`,
+  30 ms budget per frame, half-texel UV inset because the viewport's textures repeat; `Clear` removes only its tiles,
+  so overlays can share its `Scene`), `TerrainViewport` (the 3D view shared with the airflow view: LOD every frame,
+  the flight, clipping planes that follow the camera, the altitude overlay, an `Animate` hook), `TerrainDetailView`,
   `TerrainActions` (exports reuse the preview's model when its settings match, else build; clear the cache),
   `TerrainFlight` (WASD/E/Q fly the orbit camera, target and all, at 0.8 × the height above the ground per second,
   Shift ×4, eased, above the ground; right drag looks around in place). The fly keys are commands of the "Terrain
-  flight" group (rebindable; run from the palette they step a second's worth): the detail view takes the keys bound
-  to them in `OnPreviewKeyDown` while held and releases them when the focus leaves (GLFW releases keys on window
-  deactivation). Posted window messages don't reach GLFW: drive the app with real input (keybd_event).
+  flight" group (rebindable; run from the palette they step a second's worth): the views take the keys bound to them
+  in `OnPreviewKeyDown` (forwarded to `TerrainViewport.HandleKeyDown`) while held and release them when the focus
+  leaves (GLFW releases keys on window deactivation). Posted window messages don't reach GLFW: drive the app with
+  real input (keybd_event; Home needs the extended-key flag, else it is numpad 7). `TerrainNode.ChildTypes` lists
+  what a terrain holds (modules add theirs); `TerrainModule.ModelAsync` gives a node's built model (the preview's when
+  current); `TerrainModel.SampleColors` samples the textures on a grid (the coarsest level fine enough).
   The cache is `%LOCALAPPDATA%\ParagliderToolbox\TerrainCache` (`PARAGLIDERTOOLBOX_TERRAIN_CACHE`). Tests use fake
   sources and synthetic TIFFs (`TestTiff`, with an LZW encoder as libtiff writes it); nothing in the tests uses the
   network.
+
+## Airflow Simulator
+
+Airflow over a terrain for a sounding, a wind and a time of day, for games. Three parts: `src/ParagliderToolbox.Airflow`
+(UI-free, no dependencies besides .NET, so a game can use it as it is), `src/ParagliderToolbox.Airflow.Gpu` (the
+solver on a graphics card, ILGPU) and `src/ParagliderToolbox/Modules/Airflow` (runs on the card when there is one).
+`docs/AirflowFormat.md` documents the `.airflow` file and the algorithm for game developers; keep it in sync.
+
+- **Atmosphere**: `Thermodynamics` (moist air: θ, saturation, dew point, Bolton's condensation level), `Sounding`
+  (levels of T and Td by height, tabulated every 10 m with hydrostatic pressure), `SoundingPresets` (Payerne-like
+  morning soundings by season and stability; föhn with its south wind), `BoundaryLayer` (encroachment: the mixed layer
+  the day's heat makes of the morning sounding; w*).
+- **Sun/Surface**: `SolarPosition` (NOAA, clear-sky beam and diffuse), `HeightField` (the input terrain, row by row
+  from north), `LandCovers` (RGB + slope + height + relief → meadow/forest/field/rock/urban/water/snow: flat and bluish
+  is water, lakes are flat in the elevation models; albedo, sensible share, ground share, roughness), `SurfaceHeating`
+  (slope incidence, shadows traced to the sun, energy partition, the day's accumulated heat; water gives no fixed
+  flux: `WaterTemperature` by season and height, `WaterFlux` bulk formulas the solver applies every step).
+- **Simulation**: `AirflowGrid` (Cartesian cells over the heightfield, cut-cell open shares of every face and air
+  share of every cell from 4 × 4 sub-samples; cells under 15% air and faces under 10% open are ground; layouts
+  `(k * Nx + i) * Ny + j`), `PressureSolver` (variational Poisson, PCG with an aggregation multigrid V-cycle, warm
+  start), `AirflowSolver` (Boussinesq: MacCormack advection, buoyancy against level means, Smagorinsky with Richardson
+  scaling, log-law friction and surface heat in the cells the ground passes through, saturation adjustment,
+  relaxation bands and a top sponge, open outflow sides; each column's water share exchanges heat and vapor with the
+  air above it by the water's temperature, `WaterHeat`), `AirflowAverages`, `AirflowSimulation` (land cover → sun →
+  column fluxes → the day's heat spread over 3 km → mixed layers (a cool 60 m layer over water colder than the air) →
+  solver → field: maps, thermals, triggers). Thermals: columns where the warm-core mean climb peaks, their core traced
+  through the mean wind down to 1.5 layers above the ground (lower, the path follows the upslope wind to the valley
+  floor) and up to 1 m/s; none from water colder than the air. Tracing the strongest neighbor cell per level instead
+  wanders along the slopes' lift bands; placing a thermal at its strongest level put shore thermals over the lakes.
+  Lakes once took the land's heat partition (+20–30 W/m² on a July afternoon): water must cool warmer air.
+  Measured lessons, don't undo: advect the potential temperature as a whole (the perturbation plus the
+  background at the departure height), else stable air doesn't resist rising and nothing caps thermals; slivers of
+  air (1% cells, few-% faces) are hardly constrained by the pressure and carry wild velocities; an open side whose
+  zero-gradient copies an inward flow feeds itself (air entering takes the inflow's, and all sides relax weakly);
+  mixed layers grown per column from their own ground differ by kelvins at one height and overturn violently (grow
+  them over the area's mean ground); heat a sliver's share into the cell above. Interlaken 10 km at 100 m cells
+  (0.85M cells): about 0.1 s per step on the CPU (pressure 45%, advection 35%), 30 minutes in 45 s; `SolverTests` pin
+  mass conservation, the venturi, ridge lift and lee sink, a thermal capped by an inversion and lee turbulence.
+  `IAirflowSolver` is what `AirflowSimulation` drives (step, accumulate the averages, `Averages()`/`Snapshot()` as
+  `AirflowCells`); `AirflowSetup` holds what every solver precomputes (sounding per level, inflow targets, surface
+  fluxes, the pressure hierarchy); the `solver` factory of `AirflowSimulation` picks the implementation.
+- **GPU** (`src/ParagliderToolbox.Airflow.Gpu`, ILGPU 1.5.3: CUDA, else OpenCL): `GpuAirflowSolver`, the same steps
+  as `GpuKernels` (one thread per face/cell/column; the pressure PCG's dots and maxima are grouped reductions with
+  one atomic per group, read back per iteration; the coarsest level in one group with barriers), state and averages
+  on the card. `AirflowGpu.Factory` (null without a card; falls back to the CPU solver when the card can't take the
+  grid). The kernels can't use `System.Numerics.Vector3` (.NET 10 builds it on intrinsics ILGPU can't compile: own
+  `Float3`), and ILGPU's CPU accelerator emits types into the dynamic assembly `ILGPURuntime` (InternalsVisibleTo it).
+  `GpuSolverTests` compare it with the CPU solver on ILGPU's CPU accelerator (1 mm/s after 12 steps) and, when there
+  is a card, on it (fast math: a few cm/s after 40 steps). RTX 4090: Interlaken 10 km at 100 m 5 ms per step (30 min
+  in 2.2 s, 20×), at 50 m (6.8M cells) 45 ms; the pressure solve is 75–85% of it, near the card's memory bandwidth.
+- **Resolved convection**: at cells ≤ 75 m (`AirflowNode.ResolvedThermals`) the landscape run resolves thermals and
+  their cumulus coming and going. Solver features for it, both solvers: cloud shadows (`ShadedHeat`, `SunDirection`:
+  the cloud water along the sun's ray, the ground's heat following in `GroundResponseTime`), inflow noise
+  (`InflowNoise`, the cell perturbation method: blocks just inside the upwind relaxation band, renewed as the wind
+  crosses them); `AirflowSimulation` puts ±0.1 K of noise in the lowest 300 m of every start (an even start convects
+  only after minutes, in rings from the sides). `AirflowSimulation.FilmInterval` keeps an `AirflowFilm` of the run (per
+  column and frame: lift at `LiftHeights` above the ground, cloud base/top/water path, sunshine; in memory, not in the
+  `.airflow` file). Measured (Interlaken 50 m, RTX 4090): 6.8M cells 90 min in 93 s, 8.4M (3.5 km clearance) with the
+  census 2–3 min; the first ~30 min are a spin-up burst (convection breaks out everywhere at once from the encroachment
+  start: ~20% cloud), then 3–5% cumulus that come and go; with 2.5 km clearance the cumulus over the high ridges hit the
+  damping layer.
+- **Convection** (`Convection/`): `ConvectionCensus` (with `AirflowSettings.TrackConvection`, fed every
+  `CensusInterval` of the averaged time from the film's snapshot buffer): per frame w over 3 × 3 columns, updrafts grown
+  from 2 m/s seeds strongest first through half the seed's climb, then straight up/down their columns through 0.75 m/s;
+  thermal = warmer than a 3-cell ring at its levels (θv) or cloudy; clouds = cloudy columns (8-connected); both followed
+  by footprint overlap (moved by their wind, widened a column), split-offs join the parent's family (= one thermal or
+  cloud, its strongest piece per frame); a cloud links to thermals topping within two levels of its base; the base flow
+  averages per cell the frames free of thermals (and 0.3 m/s within 2 cells of them) and clouds, filling cells free < 20%
+  of the time from their level's neighbors. `ConvectionClimate` (`ThermalLife`, `CloudLife`, `ThermalSite` from the
+  roots' density peaks, `ThermalCycle`/`CloudCycle` in tenths of a life) goes into `AirflowField.Convection` and the
+  file's header; the base flow into `BaseWindX/Y/Z` (`BaseFlow()` shares the other arrays, `BaseWindAt`). Measured
+  lessons, don't undo: a fixed 1 m/s core threshold fragments thermals into 1–3 min pieces; growing down to 0.75 m/s
+  joins everything along a sunny ridge (its upslope band and convergence lines) into one 400k-cell updraft; families
+  without the 300 m depth / 150 m width filter count every flicker. Interlaken: ~170 thermals/h over 100 km², core 2 m/s
+  (peak 4), 250 m wide, 60–70 sites, ~70 cumulus/h, half the thermals feed one, the base flow sinks 0.4 m/s at 300 m.
+  The scratch harness drew the sites with roots and leans, the lives as bars over time, mean vs base w maps, and
+  consecutive frames of a window with the updrafts colored by family (dumped per frame): that is how to judge changes.
+  The box thermals (one thermal at a time nested in the landscape at 25 m) were removed; the `thermal` node type is
+  retired (`NodeTypeRegistry.Retired`: loading drops such nodes).
+  `ConvectionModel` (the game side; `LiveThermal`, `LiveCloud`): Poisson births at `ThermalRate`, each a copy of a
+  recorded `ThermalLife` drawn evenly (root ±40 m, the rest ±10%); climb by `ThermalCycle` with 60 s fades; Gaussian core
+  (half at the radius) plus a skirt to 3 radii whose strength (`Skirt`) matches the run's mean minus base at 300 m above
+  the ground; cut lives stretched so rate × mean life = the run's mean number alive (`LifeStretch`); drift only as far as
+  the template moved while seen; cumulus with `CloudChance` (formation rate as the run's over thermals), the life,
+  depth, water, drift and `CloudShape` of a fed cloud drawn evenly from those within 1.5 km of the template's root (an
+  even draw from all put a ridge's km-wide banks over lakes) (`LiveCloud.Columns()`: the recorded columns that are
+  cloudy at its life share, tops and water by `CloudCycle`; drawn as column boxes like the film; old files without shapes
+  give domes ≤ 2.5 × the thermal's width). The census records a shape per cloud family: per column around the family's
+  water-weighted center (snapped once: rounding each column's offset half-to-even dropped every other row) the first and
+  last time cloudy, lowest/highest level, most water. Births in order and
+  closed-form positions keep it deterministic whatever the `Advance` steps. Measured lessons, don't undo: copying each
+  thermal's linked cloud made km-wide clouds (families of merged cumulus) and too many (a cloud fed by many thermals
+  copied per thermal; linked clouds are biased to the long-lived fields); a cloud living as long as its long thermal
+  tripled the clouds about; the cores alone carry a sixth of the run's lift above the base flow (the sky sank 0.3 m/s);
+  stretched plumes drifting on left the terrain. Interlaken: 40 thermals about (run 48), 4 cumulus (run ~5 over
+  thermals), mean w at 300 m 0.00 (run 0.05); a million `WindAt` 0.3 s. `ConvectionModelTests` pin the rate, the number
+  about, the lift's shape, determinism, the cumulus' life and the skirt's calibration.
+- **Field**: `AirflowField` (cell-centered 3D fields in game order `(j * Nz + k) * Nx + i`, maps, thermals, triggers,
+  `Info`; `Sample`, `GroundAt`; a snapshot's clouds graded by the cloud water), `AirflowFile` (PTAF + JSON header + zlib
+  arrays, int16/uint8 quantized), `Streamlines` (midpoint rule through the mean wind).
+- **Module**: `AirflowNode` (under a `TerrainNode` only: `TerrainNode.ChildTypes` and `ContainerNode.PlacedTypes`;
+  settings as [Inspectable] properties; `Detail` writes the cell size, times and top clearance from the terrain's
+  extent, editing them makes it Custom; `IJsonOnDeserializing`/`OnDeserialized` keep the saved values while loading and
+  mark the saved `Result` current; `Result` is saved through `AirflowFieldJsonConverter` as the file's bytes; detail
+  Thermals is 200 cells across, 90 min, the last 60 averaged, 3.5 km above the terrain, `TrackConvection` and inflow
+  noise for cells ≤ 75 m; `CloudShadows` on by default; `Film` is kept with the result while the app runs, `SetResult`
+  sets both, a new `Result` drops it; "Over time" properties sum up the census), `NewAirflowOptions`/`NewAirflowView`
+  (sounding cards with their expected thermal top at the chosen time, compass, detail cards whose estimates know the
+  graphics card once `AirflowGpu.IsKnownAvailable`), `AirflowPreview` (the terrain via `TerrainModule.ModelAsync`, the
+  run in the background with live snapshots every 3 s and a film frame every 30 s of simulated time, overlay options;
+  over time (`OverTime`, on by default) the film's frame replaces the mean's slice (lift only), clouds and thermal
+  columns: `FilmScene` builds the lift slice, the clouds as column boxes from base to top, the shadows and the census'
+  thermals alive then (`ConvectionGeometry.Alive`: root + drift × age, leaning) off the UI thread; live, the view
+  follows the newest frame unless scrubbed back; `Seek`/`Advance` for the timeline; group "Airflow view": R, L, P, H,
+  V, T, C, G, U, B, N, Page Up/Down, O, M, Space, Home, Comma, Period, Minus, Equal; B shows the result's base flow;
+  M the game: a `ConvectionModel` of the result played live (`GameSpeed` ×1–×120, Space/Home/−/= act on it while it
+  shows; Home a new seed), exclusive with over time, the base flow under it, particles riding `model.WindAt` through
+  `AirflowParticles.Wind`; `GameScene` draws its thermals as leaning tubes, cumulus as domes with puffs, their shadows
+  along the sun, and the slice (the base flow's lift prepared once per height, the thermals' added only within their
+  reach) on the UI thread ten times a second),
+  `SunMarker` (the sun disc and its rays), `AirflowScene` (overlay geometry built off the UI thread: streamlines, slice,
+  section, thermal tubes or the census' sites (`ConvectionGeometry.Sites`), cloud boxes, ground map, trigger pins;
+  translucent overlays use a base alpha of 254 to go into the transparent pass, vertex alpha fades), `AirflowParticles`
+  (3000 trails, 60× the wind, a trail point every 0.08 s), `AirflowColors` (the scales and legends), `AirflowActions`
+  (export).
 
 ## Adding a feature
 

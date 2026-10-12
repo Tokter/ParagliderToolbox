@@ -1,12 +1,11 @@
 using System.ComponentModel;
-using System.Diagnostics;
+using System.Globalization;
 using Atelier.Controls;
 using Atelier.Core.Events;
 using Atelier.Core.Keybinding;
 using Atelier.Core.Primitives;
 using Atelier.Core.Threading;
 using Atelier.Core.Tree;
-using Atelier.Graphics3D;
 using Atelier.Layout;
 using Atelier.Markup;
 using ParagliderToolbox.Framework.Infrastructure;
@@ -27,11 +26,7 @@ namespace ParagliderToolbox.Modules.Terrain.Views;
 public sealed class TerrainDetailView : KeybindingHandler
 {
     private readonly TerrainPreview _preview;
-    private readonly Viewport3D _viewport;
-    private readonly TerrainFlight _flight;
-    private readonly Stopwatch _clock = Stopwatch.StartNew();
-    private double _lastFrame;
-    private bool _levelsQueued;
+    private readonly TerrainViewport _viewport;
 
     /// <summary>Initializes the view of <paramref name="preview"/>.</summary>
     public TerrainDetailView(TerrainPreview preview, TerrainActions actions) : base(TerrainPreview.Group)
@@ -39,30 +34,19 @@ public sealed class TerrainDetailView : KeybindingHandler
         _preview = preview;
         DataContext = preview;
 
-        _viewport = new Viewport3D().Scene(preview.Scene).ShowGrid(false);
-        _viewport.Camera.FieldOfView = 0.9f;
-        _viewport.Camera.Changed += (_, _) => QueueLevels();
-        TerrainFlightCommands.Register();
-        _flight = new TerrainFlight(_viewport.Camera, (x, z) => _preview.Tiles.HeightAt(x, z));
-        AdditionalScopes.Add(new KeybindingScope(TerrainFlight.Group, _flight));
-        _viewport.Rendered += (_, _) =>
-        {
-            double now = _clock.Elapsed.TotalSeconds;
-            bool flying = _flight.Update((float)(now - _lastFrame));
-            _lastFrame = now;
-            // Flying, or meshes still to make: another frame.
-            if (_preview.UpdateLevels(_viewport.Camera, Math.Max(1, _viewport.PixelSize.Height), _flight) || flying) _viewport.RequestRender();
-            KeepClippingInRange();
-        };
-        _preview.FirstTilesShown += (_, _) => Frame();
-        _preview.TilesChanged += (_, _) => QueueLevels();
+        _viewport = new TerrainViewport(preview.Tiles);
+        AdditionalScopes.Add(new KeybindingScope(TerrainFlight.Group, _viewport.Flight));
+        _viewport.LevelsChosen += (_, _) => _preview.View = string.Create(CultureInfo.CurrentCulture,
+            $"showing {preview.Tiles.ShownTiles} tiles, {preview.Tiles.ShownTriangles / 1000.0:0.#}k triangles");
+        _preview.FirstTilesShown += (_, _) => _viewport.Frame();
+        _preview.TilesChanged += (_, _) => _viewport.RequestRender();
 
         Content = new Grid()
             .Rows(GridLength.Auto, GridLength.Auto, GridLength.Star, GridLength.Auto, GridLength.Auto, GridLength.Auto)
             .Children(
                 Toolbar(actions),
                 Outdated().Row(1),
-                new Grid().Row(2).Children(_viewport, FlightOverlay()),
+                _viewport.Row(2),
                 // Busy until the first tile is in (the coarsest can take a while), then how many tiles are built.
                 new ProgressBar().Row(3).Margin(12, 4).BindIsVisible(preview, p => p.IsBuilding)
                     .BindIsIndeterminate(preview, p => p.IsBuilding && p.Progress <= 0)
@@ -73,7 +57,7 @@ public sealed class TerrainDetailView : KeybindingHandler
                     .BindText(preview, p => p.IsBuilding && p.StatusNote.Length > 0 ? p.StatusNote : p.Sources)
                     .BindToolTip(preview, p => p.Model?.Attribution ?? ""));
 
-        if (preview.Tiles.Bounds() != null) Dispatcher.Post(Frame);
+        if (preview.Tiles.Bounds() != null) Dispatcher.Post(_viewport.Frame);
     }
 
     private UIElement Toolbar(TerrainActions actions)
@@ -102,41 +86,11 @@ public sealed class TerrainDetailView : KeybindingHandler
             Toggle("Texture", MaterialIconKind.Texture, _preview, p => p.Textured, (p, v) => p.Textured = v, "Show the texture or a plain surface (T)"),
             Toggle("Levels", MaterialIconKind.Layers, _preview, p => p.ShowLevels, (p, v) => p.ShowLevels = v, "Tint the tiles by their level of detail (L): finer tiles where the camera is close"),
             new Button().Variant(ButtonVariant.Text).Height(30).MinHeight(0).Padding(8, 0)
-                .Content(new Icon().Kind(MaterialIconKind.CenterFocusStrong).Size(18)).ToolTip("Frame the terrain (Home)").OnClick(Frame),
+                .Content(new Icon().Kind(MaterialIconKind.CenterFocusStrong).Size(18)).ToolTip("Frame the terrain (Home)").OnClick(_viewport.Frame),
             new Border().Width(12),
             new Button().Variant(ButtonVariant.Text).Command(actions.ExportTilesCommand).Height(30).MinHeight(0).Padding(8, 0),
             new Button().Variant(ButtonVariant.Text).Command(actions.ExportGlbCommand).Height(30).MinHeight(0).Padding(8, 0));
     }
-
-    // Over the viewport's top left corner: the camera's altitude, height above the ground and speed, and until the first
-    // flight of the session, the keys that fly (as currently bound).
-    private UIElement FlightOverlay()
-    {
-        static string Key(string name)
-        {
-            string gesture = KeybindingManager.FindCommand(TerrainFlight.Group, name)?.Keybinding ?? "";
-            // "RightDrag" reads "right drag".
-            return gesture.EndsWith("Drag", StringComparison.Ordinal) ? gesture[..^4].ToLowerInvariant() + " drag" : gesture;
-        }
-        var white = Color.FromRgb(255, 255, 255);
-        _hint = new TextBlock(
-                $"{Key("FlyForward")} {Key("FlyLeft")} {Key("FlyBack")} {Key("FlyRight")} fly · {Key("FlyUp")} {Key("FlyDown")} up, down · Shift faster · {Key("LookAround")} looks around")
-            .LabelSmall().Foreground(Color.FromArgb(0xC8, 255, 255, 255))
-            .IsVisible(!s_hasFlown);
-        return new Border()
-            .HorizontalAlignment(HorizontalAlignment.Left).VerticalAlignment(VerticalAlignment.Top)
-            .Margin(10).Padding(10, 6).CornerRadius(8)
-            .Background(Color.FromArgb(0x8C, 0x12, 0x16, 0x1C))
-            .IsHitTestVisible(false)
-            .BindIsVisible(_preview, p => p.FlightInfo.Length > 0)
-            .Child(new StackPanel().Spacing(2).Children(
-                new TextBlock().BodyMedium().Foreground(white).FontFamily("Consolas").BindText(_preview, p => p.FlightInfo),
-                _hint));
-    }
-
-    // Shown until the first flight of the session.
-    private static bool s_hasFlown;
-    private TextBlock? _hint;
 
     // While the terrain shown is older than the settings.
     private UIElement Outdated() =>
@@ -148,66 +102,18 @@ public sealed class TerrainDetailView : KeybindingHandler
             .BindIsVisible(_preview, p => p.IsOutdated && !p.IsBuilding)
             .Child(new TextBlock("The settings changed: Generate (G) builds the terrain again.").BodySmall());
 
-    private void QueueLevels()
-    {
-        if (_levelsQueued) return;
-        _levelsQueued = true;
-        Dispatcher.Post(() =>
-        {
-            _levelsQueued = false;
-            _viewport.RequestRender();
-        });
-    }
-
-    private void Frame()
-    {
-        if (_preview.Tiles.Bounds() is not { } bounds) return;
-        // A three-quarter view from the south and above, like the view from a launch. Framing fits the box's diagonal;
-        // a flat terrain fills the view from closer (its far corners just outside).
-        _viewport.Camera.SetAngles(0.5f, 0.4f);
-        _viewport.Camera.Frame(bounds.Min, bounds.Max);
-        _viewport.Camera.Distance *= 0.5f;
-        _viewport.RequestRender();
-    }
-
-    // The orbit camera's clipping planes follow how close it is to its target and to the ground, so the ground doesn't
-    // clip when zoomed in or flying low.
-    private void KeepClippingInRange()
-    {
-        var camera = _viewport.Camera;
-        float extent = (float)(_preview.Tiles.Layout?.Extent ?? 1000);
-        float near = Math.Clamp(Math.Min(camera.Distance / 2000, Math.Max(0.5f, _flight.HeightAboveGround) / 3), 0.05f, 50);
-        float far = Math.Max(extent * 3, camera.Distance * 20);
-        if (Math.Abs(camera.Near - near) > near * 0.25f) camera.Near = near;
-        if (Math.Abs(camera.Far - far) > far * 0.25f) camera.Far = far;
-    }
-
     /// <inheritdoc/>
-    /// <remarks>
-    /// Keys bound to a fly command (alone, or with Shift for speed) fly while they're held, before the view's other
-    /// keybindings see them; with Ctrl or Alt they're left to the other shortcuts.
-    /// </remarks>
     public override void OnPreviewKeyDown(KeyEventArgs e)
     {
         base.OnPreviewKeyDown(e);
-        if (e.Handled) return;
-        _flight.IsFast = (e.Modifiers & ModifierKeys.Shift) != 0 || e.Key is Key.LeftShift or Key.RightShift;
-        if ((e.Modifiers & (ModifierKeys.Control | ModifierKeys.Alt)) != 0) return;
-        if (TerrainFlightCommands.DirectionOf(e.Key) is not { } direction) return;
-        e.Handled = true;
-        if (!_flight.IsMoving) _lastFrame = _clock.Elapsed.TotalSeconds;
-        _flight.Press(direction);
-        s_hasFlown = true;
-        _hint?.IsVisible(false);
-        _viewport.RequestRender();
+        if (!e.Handled && _viewport.HandleKeyDown(e)) e.Handled = true;
     }
 
     /// <inheritdoc/>
     public override void OnPreviewKeyUp(KeyEventArgs e)
     {
         base.OnPreviewKeyUp(e);
-        _flight.IsFast = (e.Modifiers & ModifierKeys.Shift) != 0 && e.Key is not (Key.LeftShift or Key.RightShift);
-        if (TerrainFlightCommands.DirectionOf(e.Key) is { } direction) _flight.Release(direction);
+        _viewport.HandleKeyUp(e);
     }
 
     /// <inheritdoc/>
@@ -216,7 +122,7 @@ public sealed class TerrainDetailView : KeybindingHandler
         base.OnAttachedToVisualTree();
         _preview.PropertyChanged += OnPreviewPropertyChanged;
         FocusManager.FocusChanged += OnFocusChanged;
-        QueueLevels();
+        _viewport.RequestRender();
     }
 
     /// <inheritdoc/>
@@ -224,18 +130,18 @@ public sealed class TerrainDetailView : KeybindingHandler
     {
         _preview.PropertyChanged -= OnPreviewPropertyChanged;
         FocusManager.FocusChanged -= OnFocusChanged;
-        _flight.ReleaseAll();
+        _viewport.ReleaseKeys();
         base.OnDetachedFromVisualTree();
     }
 
     // Keys released elsewhere don't reach the view: when the focus leaves it, the camera stops.
     private void OnFocusChanged(UIElement? previous, UIElement? focused)
     {
-        if (focused is null || (focused != this && !focused.IsDescendantOf(this))) _flight.ReleaseAll();
+        if (focused is null || (focused != this && !focused.IsDescendantOf(this))) _viewport.ReleaseKeys();
     }
 
     private void OnPreviewPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
-        if (e.PropertyName is nameof(TerrainPreview.ShowLevels) or nameof(TerrainPreview.Textured) or nameof(TerrainPreview.Model)) QueueLevels();
+        if (e.PropertyName is nameof(TerrainPreview.ShowLevels) or nameof(TerrainPreview.Textured) or nameof(TerrainPreview.Model)) _viewport.RequestRender();
     }
 }

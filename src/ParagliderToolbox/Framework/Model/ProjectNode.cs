@@ -109,6 +109,12 @@ public abstract class ProjectNode : ObservableObject
         if (e.PropertyName != nameof(Parent)) NotifySubtreeChanged(new NodeChangedEventArgs(this, e.PropertyName));
     }
 
+    /// <summary>
+    /// Raises <see cref="INotifyPropertyChanged.PropertyChanged"/> for a computed value that changed while the node
+    /// didn't (an estimate that depends on the machine, say): the views update, the project isn't modified.
+    /// </summary>
+    protected void OnComputedPropertyChanged(string propertyName) => base.OnPropertyChanged(new PropertyChangedEventArgs(propertyName));
+
     private void NotifySubtreeChanged(NodeChangedEventArgs e)
     {
         for (var node = this; node != null; node = node.Parent)

@@ -95,10 +95,10 @@ public sealed class TerrainScene
         _tiles = tiles;
     }
 
-    /// <summary>Removes everything.</summary>
+    /// <summary>Removes the tiles (other instances in <see cref="Scene"/>, such as overlays, stay).</summary>
     public void Clear()
     {
-        Scene.Instances.Clear();
+        foreach (var entry in _entries.Values) Scene.Instances.Remove(entry.Instance);
         _entries.Clear();
         _layout = null;
         _tiles = new Dictionary<TileKey, TerrainTile>();

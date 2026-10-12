@@ -80,7 +80,8 @@ public class DataCacheTests : IDisposable
     [Fact]
     public async Task ReadsOfOneFile_RunInParallel_AndShareTheChunksBeingDownloaded()
     {
-        _server.Delay = TimeSpan.FromMilliseconds(200);
+        // Long enough that the three downloads overlap even on a busy machine.
+        _server.Delay = TimeSpan.FromSeconds(1);
         var reader = Cache().OpenRanges("https://data.test/big.tif");
         // Three chunks, each read twice at once.
         var reads = Enumerable.Range(0, 6).Select(i => reader.ReadAsync(i % 3 * DataCache.ChunkSize + 7, 100)).ToArray();

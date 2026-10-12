@@ -4,6 +4,7 @@ using ParagliderToolbox.Framework.Infrastructure;
 using ParagliderToolbox.Framework.Modules;
 using ParagliderToolbox.Framework.Settings;
 using ParagliderToolbox.Framework.Views;
+using ParagliderToolbox.Modules.Airflow;
 using ParagliderToolbox.Modules.Core;
 using ParagliderToolbox.Modules.Paraglider;
 using ParagliderToolbox.Modules.Terrain;
@@ -13,12 +14,14 @@ namespace ParagliderToolbox;
 internal static class Program
 {
     /// <summary>The toolbox's features. Add new modules here.</summary>
-    private static IEnumerable<IToolboxModule> Modules =>
-    [
-        new CoreModule(),
-        new ParagliderModule(),
-        new TerrainModule(),
-    ];
+    private static IEnumerable<IToolboxModule> Modules
+    {
+        get
+        {
+            var terrain = new TerrainModule();
+            return [new CoreModule(), new ParagliderModule(), terrain, new AirflowModule(terrain)];
+        }
+    }
 
     private static void Main(string[] args)
     {

@@ -189,6 +189,109 @@ Blender. `docs/images/render_terrain.py` renders it again, placing the camera by
 |---|---|
 | ![Eiger, Mönch and Jungfrau above the Lauterbrunnen valley, as a paraglider sees them](docs/images/render-terrain-jungfrau.jpg) | ![The Eiger, Mönch and Jungfrau wall from the west side of the Lauterbrunnen valley](docs/images/render-terrain-wall.jpg) |
 
+## Airflow Simulator
+
+![The airflow over Interlaken on a classic July afternoon with a light west wind: lift (orange, red) over the sunny slopes, sink (blue) over the valley and the lakes, thermals leaning with the wind and cumulus (data © swisstopo)](docs/images/ui-airflow.png)
+
+*A classic July afternoon over Interlaken at 14:00, west wind 15 km/h: 30 minutes simulated on 102 × 102 × 82 cells in
+45 s. The slice 300 m above the ground shows the lift over the sunny slopes and the sink over the valley and the lakes,
+which are colder than the afternoon air; 105 thermals lean with the wind from the slopes, the higher ones under
+cumulus. Data: © swisstopo.*
+
+An airflow belongs to a terrain: select the terrain and add one (Ctrl+Shift+A). Choose a sounding (premade morning
+soundings of the Alpine foreland: spring unstable, spring inversion, a classic summer day, thundery, high pressure, an
+autumn valley inversion, winter, föhn), the wind (where it comes from and its speed) and the time of day, then Simulate
+(R). The fluid solver ([docs/AirflowFormat.md](docs/AirflowFormat.md)) runs over the terrain:
+
+- **Wind**: incompressible flow over the terrain cut into the grid's cells, so it follows slopes, speeds up through
+  passes (venturi), rises on windward slopes, sinks and separates in the lee; the sounding's stratification makes the
+  air resist rising, so föhn makes lee waves and rotors.
+- **Thermals**: the sun of that date and time heats every slope by its angle to the sun and its shadows, and by what
+  covers it, read from the aerial images (meadow, forest, fields, rock, towns, water, snow); the day's heat so far has
+  grown the boundary layer out of the morning sounding, whose inversions cap the thermals; rising moist air condenses
+  into cumulus at the cloud base. Lakes keep the season's water temperature: colder than the afternoon air, they cool
+  it and the air sinks over them; warmer, as in autumn, they warm it. Thermals lean with the wind from where they leave
+  the ground.
+- **Result**: averaged over the last 10 minutes: the mean wind, the turbulence, how often and how strongly the air
+  rises, the clouds, maps of the ground's heating, the boundary layer's top and the cloud base, the thermals and their
+  likely triggers. It is saved with the project; **Export airflow** writes it for a game (`.airflow`).
+- **Speed**: on a graphics card (CUDA, or OpenCL) the solver runs about 20 times faster than on the processor: the
+  30 minutes above take 2 s on an RTX 4090 instead of 45 s, and the same 10 km at 50 m cells (6.8 million) 28 s.
+  Without a card it runs on the processor's cores.
+
+The detail view shows the flow live while it develops and the result afterwards: a slice at a height above the ground
+(lift and sink, turbulence, wind, lift chance or warming), a vertical section along the wind, streamlines, particles
+streaming like streamers, the thermals with their cumulus, the clouds, and the ground's heating or land cover with the
+thermal triggers. The camera flies as in the terrain view (W, A, S, D).
+
+| | |
+|---|---|
+| ![Streamlines of the mean wind over the ridge north of Interlaken: rising over the sunny slopes (orange, red), sinking over the valley (blue)](docs/images/airflow-streamlines.jpg) | ![Particles streaming with the wind, sped up 60 times, colored by their vertical wind](docs/images/airflow-particles.jpg) |
+
+| In the detail view | Action |
+|---|---|
+| R | Simulate (again to cancel) |
+| B | Without the thermals: the base flow a game plays its thermals over (after a Thermals run) |
+| U | The sun: where it stands, its light falling on the terrain |
+| H / V / L / P | Slice above the ground / vertical section / streamlines / particles |
+| T / C / G | Thermals (or their sites) / clouds / ground map with the triggers |
+| N, Page Up / Page Down | The slice's next quantity, raise / lower it by 100 m |
+| O | Over time: the run's clouds and lift as they come and go, or its mean |
+| Space, Home, `,` / `.`, − / = | Play or pause the run, back to its start, half a minute back / on, slower / faster |
+| M | Game: the run's thermals and cumulus played as a game would (Space pauses, − / = slower / faster, Home another sky) |
+
+### Over time
+
+![The run over time at 50 m cells: cumulus building over the ridges north of Interlaken, the lift 300 m above the ground under them (data © swisstopo)](docs/images/airflow-over-time.jpg)
+
+The detail **Thermals** resolves the thermals themselves: about 200 cells across the terrain (50 m over 10 km) for 90
+minutes, the clouds shading the ground, and room above for the cumulus to grow. Thermals rise from the sunny slopes and
+grow cumulus; a cumulus' shadow cuts the heat under it and its thermal dies while new ones start elsewhere. Every half
+minute of a run is kept as a frame and shown live while it runs: the lift at the slice's height, every cloud as columns
+from its base to its top (the denser, the more water it holds) and the shadows on the ground. Afterwards the timeline
+plays the run (**Over time**, O; off, the airflow shows the mean of its last hour). The first half hour is the
+convection starting all at once, with a burst of cloud a real morning spreads over hours; then the cumulus come and go.
+On an RTX 4090 the 90 minutes over 10 km (8.4 million cells) take under three minutes. The frames are kept while the app
+runs, not saved with the project.
+
+Through the last hour the run follows every thermal and cumulus: what a game spawns its own by. A thermal is an updraft
+core warmer than the air around it (air forced up a ridge is cooler); it is followed from frame to frame, the bubbles
+that part from it counted as its own, and its cumulus is the cloud it feeds. The result keeps every thermal's life
+(when and where it rose, how long it lived, its climb, width, top, lean and drift, its cumulus), every cumulus' life
+(how long it lived and grew, its base, top, width and water), how a thermal's climb and a cumulus' water go over their
+lives, and the **sites** thermals rise from again and again with their rate and their thermals' averages. Over Interlaken
+on a classic July afternoon: about 170 thermals an hour over the 100 km², climbing 2 m/s in the core (4 at their
+strongest), 250 m wide, most living a few minutes and the plumes of the busiest sites most of the hour; 70 cumulus an
+hour, half the thermals feeding one. The run also keeps the **base flow**: the mean wind of the air between the thermals
+and clouds (**Without thermals**, B), with the slopes' lift taken out where thermals carried it and the sink between
+them. Over time, T shows the thermals alive at the moment; over the mean, their sites. The properties' **Over time**
+sum it up.
+
+### Game
+
+![The game over Interlaken: the convection model's thermals as leaning tubes over the base flow's lift 300 m above the ground, a cumulus of the run's over the ridge, column by column (data © swisstopo)](docs/images/airflow-game.jpg)
+
+**Game** (M) plays the run's thermals and cumulus as a game would: the convection model below over the base flow, live
+(×30 at first; − and = from real time to ×120, Space pauses, Home starts another sky). The thermals rise as leaning
+tubes colored by their climb at the moment, fading in and out; the cumulus are the run's own, column by column as Over
+time draws them: they start as a wisp's few columns, spread, build and clear as the run's did, their shadows on the
+ground along the sun; the slice shows the base flow's lift with the thermals', and particles (P)
+ride the model's wind. The bar under the view counts the thermals and cumulus about and the strongest climb against
+what the run had about, so flipping between **Over time** (O, the run) and **Game** (M) compares them.
+
+`ParagliderToolbox.Airflow` has no dependencies besides .NET, so a game can use it as it is: `AirflowField.Load` and
+`Sample(x, y, z)` for an exported airflow, `AirflowSimulation` to run the solver over its own heightmap.
+`ParagliderToolbox.Airflow.Gpu` adds the graphics card's solver (it depends on [ILGPU](https://ilgpu.net)):
+`new AirflowSimulation(heights, colors, settings, solver: AirflowGpu.Factory)`.
+
+For an airflow from a Thermals run, `ConvectionModel` plays its thermals and cumulus in a game: thermals rise at the
+run's rate, each like one it followed (where it rose, how long it lived, its climb, width, height, lean and drift), grow
+and fade over their lives, and the cumulus over them (the run's own shapes, column by column) start as wisps, spread,
+build, decay and drift; `model.Advance(dt)` every
+frame, `model.WindAt(x, y, z)` is the base flow with the thermals' lift, `model.Clouds` the cumulus to draw. It is
+seeded and deterministic however the frames cut the time ([docs/AirflowFormat.md](docs/AirflowFormat.md#playing-it-in-a-game)).
+Over Interlaken it keeps about 40 thermals and a few cumulus about at once, as the run did.
+
 ## Building
 
 Atelier is referenced as source and expected next to this repository:

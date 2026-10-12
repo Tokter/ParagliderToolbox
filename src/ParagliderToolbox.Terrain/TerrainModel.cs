@@ -183,11 +183,78 @@ public sealed class TerrainModel
             break;
         }
         return best?.HeightAt(x, z) ?? float.NaN;
+    }
 
-        bool Inside(TileKey key, double px, double pz)
+    /// <summary>
+    /// Samples the textures on a grid of points <paramref name="spacing"/> apart from (<paramref name="x0"/>,
+    /// <paramref name="z0"/>), row by row: RGBA (red in the lowest byte), alpha 0 where there is no texture. Each point
+    /// takes the tile at the coarsest level whose texture is as fine as the spacing (or the finest there is), so only
+    /// the textures needed are decoded.
+    /// </summary>
+    public uint[] SampleColors(double x0, double z0, double spacing, int columns, int rows)
+    {
+        var colors = new uint[columns * rows];
+        var decoded = new System.Collections.Concurrent.ConcurrentDictionary<TileKey, Lazy<uint[]?>>();
+        double half = Layout.Extent / 2;
+        Parallel.For(0, rows, row =>
         {
-            var rect = Layout.Rect(key);
-            return px >= rect.X0 && px <= rect.X0 + rect.Width && pz >= rect.Z0 && pz <= rect.Z0 + rect.Depth;
+            for (int column = 0; column < columns; column++)
+            {
+                double x = x0 + column * spacing, z = z0 + row * spacing;
+                if (x < -half || x > half || z < -half || z > half) continue;
+                TerrainTile? best = null;
+                foreach (var root in Layout.Roots)
+                {
+                    if (!Inside(root, x, z)) continue;
+                    TileKey? key = root;
+                    while (key is { } current)
+                    {
+                        if (Tiles.TryGetValue(current, out var tile) && tile.Texture != null) best = tile;
+                        if (Layout.TexelSizeAt(current.Level) <= spacing) break;
+                        key = null;
+                        foreach (var child in Layout.Children(current))
+                        {
+                            if (!Inside(child, x, z)) continue;
+                            key = child;
+                            break;
+                        }
+                    }
+                    break;
+                }
+                if (best is null) continue;
+                var pixels = decoded.GetOrAdd(best.Key, _ => new Lazy<uint[]?>(best.DecodeTexture)).Value;
+                if (pixels is null) continue;
+                colors[row * columns + column] = SampleTexture(best, pixels, x, z);
+            }
+        });
+        return colors;
+    }
+
+    // Bilinear in a tile's texture (pixel centers half a pixel inside the tile's edges).
+    private static uint SampleTexture(TerrainTile tile, uint[] pixels, double x, double z)
+    {
+        var rect = tile.Rect;
+        int width = tile.TextureWidth, height = tile.TextureHeight;
+        double u = Math.Clamp((x - rect.X0) / rect.Width * width - 0.5, 0, width - 1), v = Math.Clamp((z - rect.Z0) / rect.Depth * height - 0.5, 0, height - 1);
+        int a = Math.Min((int)u, width - 2), b = Math.Min((int)v, height - 2);
+        a = Math.Max(a, 0);
+        b = Math.Max(b, 0);
+        double tu = u - a, tv = v - b;
+        uint p00 = pixels[b * width + a], p10 = pixels[b * width + Math.Min(a + 1, width - 1)];
+        uint p01 = pixels[Math.Min(b + 1, height - 1) * width + a], p11 = pixels[Math.Min(b + 1, height - 1) * width + Math.Min(a + 1, width - 1)];
+        uint result = 0xFF000000u;
+        for (int shift = 0; shift < 24; shift += 8)
+        {
+            double top = ((p00 >> shift) & 0xFF) * (1 - tu) + ((p10 >> shift) & 0xFF) * tu;
+            double bottom = ((p01 >> shift) & 0xFF) * (1 - tu) + ((p11 >> shift) & 0xFF) * tu;
+            result |= (uint)Math.Clamp((int)(top * (1 - tv) + bottom * tv + 0.5), 0, 255) << shift;
         }
+        return result;
+    }
+
+    private bool Inside(TileKey key, double px, double pz)
+    {
+        var rect = Layout.Rect(key);
+        return px >= rect.X0 && px <= rect.X0 + rect.Width && pz >= rect.Z0 && pz <= rect.Z0 + rect.Depth;
     }
 }
