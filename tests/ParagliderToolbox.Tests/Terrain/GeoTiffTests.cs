@@ -108,6 +108,19 @@ public class GeoTiffTests
         Assert.Equal(255u, c >> 24);
     }
 
+    [Theory]
+    [InlineData(null, 77u)]
+    [InlineData((ushort)2, 77u)]
+    [InlineData((ushort)0, 255u)]
+    public async Task AFourthSample_IsAlphaUnlessTheExtraSamplesTagSaysOtherwise(ushort? extraSamples, uint alpha)
+    {
+        byte[] Rgbx(int tx, int ty) => Enumerable.Range(0, 16 * 16).SelectMany(_ => new byte[] { 200, 60, 30, 77 }).ToArray();
+        var file = TestTiff.Create([new TestImage(16, 16, 16, 16, 8, 1, 4, 1, 1, Rgbx, Photometric: 2)], 0, 0, 1, 2056, extraSamples: extraSamples);
+        var tiff = await GeoTiff.OpenAsync(new MemoryRangeReader(file));
+        var block = await tiff.ReadColorBlockAsync(0, 0, 0);
+        Assert.Equal(alpha << 24 | 30u << 16 | 60u << 8 | 200u, block[8 * 16 + 8]);
+    }
+
     [Fact]
     public async Task BlockIndexesBeyondTheHeader_AreReadWhenTheirImageIs()
     {

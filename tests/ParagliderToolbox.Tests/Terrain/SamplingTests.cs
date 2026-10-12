@@ -8,13 +8,15 @@ namespace ParagliderToolbox.Tests.Terrain;
 internal sealed class FunctionLevel(string key, double x0, double y0, double pixel, int width, int height, int block, Func<double, double, float> value)
     : RasterLevel<float>(x0, y0, pixel, pixel, width, height, block, block)
 {
-    public int Loads { get; private set; }
+    private int _loads;
+
+    public int Loads => _loads;
 
     public override string Key => key;
 
     public override Task<float[]?> LoadBlockAsync(int blockX, int blockY, CancellationToken cancellationToken)
     {
-        Loads++;
+        Interlocked.Increment(ref _loads);
         var pixels = new float[BlockWidth * BlockHeight];
         for (int y = 0; y < BlockHeight; y++)
         {

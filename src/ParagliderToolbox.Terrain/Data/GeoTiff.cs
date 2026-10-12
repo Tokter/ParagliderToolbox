@@ -66,6 +66,10 @@ public sealed class TiffImage
     public bool IsMask { get; internal init; }
 
     internal int PlanarConfiguration { get; init; } = 1;
+
+    /// <summary>Gets whether the last sample of a 2 or 4 sample image is alpha (TIFF's ExtraSamples; assumed without it).</summary>
+    public bool HasAlpha { get; internal init; }
+
     internal byte[]? JpegTables { get; init; }
 
     // Where the blocks are: read with the directory when it fits the header, else when a block is first needed (a large
@@ -232,7 +236,7 @@ public sealed class GeoTiff
             int at = i * spp;
             if (at + spp > data.Length) break;
             uint r = data[at], g = spp >= 3 ? data[at + 1] : r, b = spp >= 3 ? data[at + 2] : r;
-            uint a = spp is 2 or 4 ? data[at + spp - 1] : 255u;
+            uint a = info.HasAlpha && spp is 2 or 4 ? data[at + spp - 1] : 255u;
             if (r == noData && g == noData && b == noData) a = 0;
             colors[i] = r | g << 8 | b << 16 | a << 24;
         }
@@ -532,6 +536,8 @@ public sealed class GeoTiff
             Predictor = (int)Int(317, 1),
             Photometric = (int)Int(262, 1),
             PlanarConfiguration = (int)Int(284, 1),
+            // The extra sample is alpha when ExtraSamples says so (1 or 2); NAIP's fourth, near-infrared, is 0.
+            HasAlpha = Find(338) is { } extra ? Integers(extra) is [1 or 2, ..] : Int(277, 1) is 2 or 4,
             IsMask = (Int(254, 0) & 4) != 0,
             LoadIndex = async token => (await ValuesAsync(offsets, token), await ValuesAsync(counts, token)),
             JpegTables = Find(347)?.Value,

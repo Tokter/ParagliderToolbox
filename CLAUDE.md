@@ -191,7 +191,14 @@ documents the tile set export for game developers; keep it in sync with the layo
   `SwissAltiRegioSource` (one BigTIFF COG, 10 m with overviews, Switzerland and ≥ 100 km around it, LV95; credits
   the neighbors' data), `CopernicusDemSource` (AWS bucket, 1° COGs; missing
   tiles are sea at 0), `Sentinel2CloudlessSource` (EOX's 2016 layer, the only CC BY one; `WebTileLevel`). Measured:
-  Copernicus is a surface model, median 1–4 m and in forests 15–25 m above swissALTI3D.
+  Copernicus is a surface model, median 1–4 m and in forests 15–25 m above swissALTI3D. United States (public domain,
+  `UsgsSources`, `NaipSource`): `Usgs3Dep1MeterSource` (lidar, 10 km UTM tiles in NAD83 found through the National
+  Map's TNM Access API in 0.1° cells; projects overlap, so a fill pass per project, newest first; overviews to 32 m),
+  `Usgs3Dep13Source` (1/3″ 1° tiles, `n39w123`, EPSG 4269), `NaipSource` (USDA aerial photos, 60 cm, RGB + near-infrared
+  COGs found through the Planetary Computer's STAC API: the newest year per quarter quad; neighbors overlap with black
+  borders, so passes by UTM zone and checkerboard square, black is no image). `EpsgSystems` maps a file's EPSG code to
+  its system; `TiffImage.HasAlpha` reads ExtraSamples (NAIP's fourth sample is not alpha). Esri World Imagery is left
+  out on purpose (its terms for offline use are unclear). Mount Tamalpais 10 km at 2 m: 4.6 min and 1.3 GB cold.
 - **Layout** (`TerrainLayout`): a quadtree of tiles with `TileSamples` (2^k + 1) per side at every level, each level
   half as fine; the size rounds to whole level-0 tiles (the resolution stays as set); coarser tiles are cut back where
   the area ends; automatic levels reach one root; `DetailSize` splits tiles only near the center (the finest level

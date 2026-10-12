@@ -33,8 +33,8 @@ public sealed class TerrainSources
 
     /// <summary>
     /// Creates the built-in sources: swissALTI3D, swissALTIRegio and SWISSIMAGE (swisstopo, Switzerland and around it),
-    /// the Copernicus DEM GLO-30 and EOX's Sentinel-2 cloudless 2016 (worldwide), downloading through
-    /// <paramref name="cache"/>.
+    /// the USGS 3DEP one-meter lidar and 1/3 arc-second models and USDA NAIP (the United States), the Copernicus DEM
+    /// GLO-30 and EOX's Sentinel-2 cloudless 2016 (worldwide), downloading through <paramref name="cache"/>.
     /// </summary>
     public static TerrainSources CreateDefault(DataCache cache)
     {
@@ -43,8 +43,12 @@ public sealed class TerrainSources
         var sources = new TerrainSources { Cache = cache };
         sources.Elevation.Add(new SwissAlti3DSource(files, swiss));
         sources.Elevation.Add(new SwissAltiRegioSource(files, swiss));
+        var nationalMap = new NationalMapCatalog(cache);
+        sources.Elevation.Add(new Usgs3Dep1MeterSource(files, nationalMap));
+        sources.Elevation.Add(new Usgs3Dep13Source(files));
         sources.Elevation.Add(new CopernicusDemSource(files));
         sources.Imagery.Add(new SwissImageSource(files, swiss));
+        sources.Imagery.Add(new NaipSource(files, new NaipCatalog(cache)));
         sources.Imagery.Add(new Sentinel2CloudlessSource(cache));
         return sources;
     }

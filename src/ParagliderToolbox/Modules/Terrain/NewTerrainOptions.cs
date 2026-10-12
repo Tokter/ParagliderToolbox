@@ -43,6 +43,11 @@ public sealed partial class NewTerrainOptions : ObservableObject
         new("Engelberg", new GeoPoint(46.8199, 8.4072)),
         new("Annecy (Forclaz)", new GeoPoint(45.8130, 6.2460)),
         new("Ölüdeniz (Babadağ)", new GeoPoint(36.5400, 29.1400)),
+        new("Mount Tamalpais", new GeoPoint(37.9235, -122.5965)),
+        new("Mussel Rock", new GeoPoint(37.6726, -122.4944)),
+        new("Ed Levin", new GeoPoint(37.4750, -121.8550)),
+        new("Lake Tahoe", new GeoPoint(39.0968, -120.0324)),
+        new("Mount Shasta", new GeoPoint(41.4092, -122.1949)),
     ];
 
     private string _name = "Interlaken";

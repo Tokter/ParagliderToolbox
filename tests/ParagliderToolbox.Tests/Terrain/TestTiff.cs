@@ -11,7 +11,7 @@ internal sealed record TestImage(int Width, int Height, int TileWidth, int TileH
 internal static class TestTiff
 {
     public static byte[] Create(IReadOnlyList<TestImage> images, double originX, double originY, double pixel, int epsg,
-        bool pixelIsPoint = false, string? noData = null)
+        bool pixelIsPoint = false, string? noData = null, ushort? extraSamples = null)
     {
         using var stream = new MemoryStream();
         var w = new BinaryWriter(stream);
@@ -61,11 +61,12 @@ internal static class TestTiff
             Long(324, offsets.ToArray());
             Long(325, counts.ToArray());
             Short(339, Enumerable.Repeat((ushort)image.SampleFormat, image.Samples).ToArray());
+            if (extraSamples is { } extra) Short(338, extra);
             if (index == 0)
             {
                 Double(33550, pixel, pixel, 0);
                 Double(33922, 0, 0, 0, originX, originY, 0);
-                ushort geographic = (ushort)(epsg == 4326 ? 1 : 0);
+                ushort geographic = (ushort)(epsg is 4326 or 4269 ? 1 : 0);
                 Short(34735, 1, 1, 0, 3, 1024, 0, 1, (ushort)(geographic == 1 ? 2 : 1), 1025, 0, 1, (ushort)(pixelIsPoint ? 2 : 1),
                     (ushort)(geographic == 1 ? 2048 : 3072), 0, 1, (ushort)epsg);
                 if (noData != null) entries.Add((42113, 2, (uint)noData.Length + 1, Encoding.ASCII.GetBytes(noData + "\0")));
@@ -126,6 +127,10 @@ internal static class TestTiff
             {
                 var values = System.Runtime.InteropServices.MemoryMarshal.Cast<byte, ushort>(row);
                 for (int i = values.Length - 1; i >= image.Samples; i--) values[i] -= values[i - image.Samples];
+            }
+            else if (image.Predictor == 2 && bytes == 1)
+            {
+                for (int i = row.Length - 1; i >= image.Samples; i--) row[i] -= row[i - image.Samples];
             }
             else if (image.Predictor == 3)
             {

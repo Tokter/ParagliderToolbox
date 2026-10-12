@@ -248,3 +248,28 @@ public sealed class TransverseMercator : ICoordinateSystem
         return (_falseEasting + _k0 * s_a * eta, _falseNorthing + _k0 * s_a * xi - _northingOffset);
     }
 }
+
+/// <summary>The coordinate systems of EPSG codes the sources' files come in.</summary>
+public static class EpsgSystems
+{
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<int, ICoordinateSystem?> s_systems = new();
+
+    /// <summary>
+    /// Gets the system of an EPSG code, or <c>null</c> for one it doesn't know: WGS84 and NAD83 latitude and longitude
+    /// (4326, 4269), Web Mercator (3857), the Swiss grid (2056), and the UTM zones on WGS84 (326xx north, 327xx south)
+    /// and NAD83 (269xx, zones 1–23). NAD83 is taken as WGS84: they differ by a meter or two in the conterminous US, under
+    /// the data's own accuracy at the resolutions a terrain samples.
+    /// </summary>
+    public static ICoordinateSystem? Find(int? code) => code is not { } epsg ? null : s_systems.GetOrAdd(epsg, Create);
+
+    private static ICoordinateSystem? Create(int epsg) => epsg switch
+    {
+        4326 or 4269 => GeographicCoordinates.Instance,
+        3857 or 900913 => WebMercator.Instance,
+        2056 => SwissGrid.Instance,
+        >= 32601 and <= 32660 => TransverseMercator.Utm(epsg - 32600),
+        >= 32701 and <= 32760 => TransverseMercator.Utm(epsg - 32700, north: false),
+        >= 26901 and <= 26923 => TransverseMercator.Utm(epsg - 26900),
+        _ => null,
+    };
+}

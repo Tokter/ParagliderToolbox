@@ -156,10 +156,11 @@ takes the coarsest source that is still fine enough for it, which has far less t
 |---|---|---|
 | Switzerland | swissALTI3D (swisstopo), lidar, bare ground, 0.5 m | SWISSIMAGE (swisstopo), 10 cm |
 | Around Switzerland (100 km and more beyond the border) | swissALTIRegio (swisstopo), bare ground, 10 m | Sentinel-2 cloudless 2016 (EOX), 10 m |
+| United States | USGS 3DEP, lidar, bare ground, 1 m where it has been flown, else 1/3″ (about 10 m) | NAIP (USDA), aerial photos, 60 cm (conterminous states) |
 | Everywhere else | Copernicus DEM GLO-30, 30 m | Sentinel-2 cloudless 2016 (EOX), 10 m |
 
-All of them may be used commercially; they require credit, which every export carries (`ATTRIBUTION.txt`). Where a
-finer source's data ends, its heights ease into the next one's over 200 m.
+All of them may be used commercially (the U.S. data is public domain); they require or ask for credit, which every
+export carries (`ATTRIBUTION.txt`). Where a finer source's data ends, its heights ease into the next one's over 200 m.
 
 The properties set the size, the finest resolution, the samples per tile (2^k + 1, as engines' heightmaps need), the
 levels of detail (a quadtree: each level half as fine, a quarter as many tiles), a full detail area for large

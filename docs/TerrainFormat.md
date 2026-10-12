@@ -14,8 +14,8 @@ The reference implementation is `ParagliderToolbox.Terrain` (C#, SkiaSharp only)
 - The frame is a **transverse Mercator projection** of WGS84 whose central meridian runs through the origin
   (`origin` in the manifest: the terrain's center, at x = z = 0), with scale 1. Distances are true to 0.003% at 25 km
   from the origin; grid north is true north on the central meridian.
-- **Y is the height above sea level** of the sources (swissALTI3D: LN02; Copernicus: EGM2008), not shifted: a launch
-  at 1950 m is at y = 1950.
+- **Y is the height above sea level** of the sources (swissALTI3D: LN02; USGS 3DEP: NAVD88; Copernicus: EGM2008), not
+  shifted: a launch at 1950 m is at y = 1950.
 - The terrain is a square from −extent/2 to +extent/2 in x and z.
 
 ## The quadtree
@@ -126,7 +126,10 @@ then the finer ones where it has no data:
 |---|---|---|---|---|
 | swissALTI3D (swisstopo) | Switzerland, Liechtenstein | Lidar terrain model, bare ground, 0.5 m and 2 m | © swisstopo | Free, including commercial use |
 | swissALTIRegio (swisstopo) | Switzerland and 100 km and more around it | Terrain model, bare ground, 10 m | Bundesamt für Landestopografie swisstopo; TINITALY/1.1 (INGV, doi:10.13127/tinitaly/1.1); DGM Österreich, geoland.at; DGM1, Bayerische Vermessungsverwaltung – www.geodaten.bayern.de; DGM1 Baden-Württemberg: LGL, www.lgl-bw.de; RGEAlti, Institut National de l'information géographique et forestière | Free, including commercial use |
+| USGS 3DEP 1 m (lidar) | United States, where flown | Lidar terrain model, bare ground, 1 m (10 km UTM tiles, newest project first) | U.S. Geological Survey, 3D Elevation Program | Public domain; credit asked |
+| USGS 3DEP 1/3 arc-second | United States | Seamless terrain model, bare ground, about 10 m (1° tiles) | U.S. Geological Survey, 3D Elevation Program | Public domain; credit asked |
 | SWISSIMAGE (swisstopo) | Switzerland | Orthophotos, 10 cm (25 cm in the Alps) | © swisstopo | Free, including commercial use |
+| NAIP (USDA) | Conterminous United States | Aerial photos flown every 2–3 summers, 60 cm (1 m before about 2018), the newest of each quarter quadrangle | USDA Farm Production and Conservation Business Center, National Agriculture Imagery Program; via Microsoft Planetary Computer | Public domain; credit asked |
 | Copernicus DEM GLO-30 | World | Surface model (with forests and buildings), 30 m | Produced using Copernicus WorldDEM-30 © DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA; all rights reserved | Free, including commercial use; credit and liability disclaimer |
 | Sentinel-2 cloudless 2016 (EOX) | World | Cloud-free satellite mosaic, 10 m | Sentinel-2 cloudless 2016 by EOX IT Services GmbH (Contains modified Copernicus Sentinel data 2016 & 2017) | CC BY 4.0 |
 
@@ -147,5 +150,6 @@ Implement `IElevationSource` or `IImagerySource` (`FillAsync` fills the samples 
 empty) and add it in `TerrainSources.CreateDefault`. For a dataset of Cloud Optimized GeoTIFFs, project the samples into
 its coordinate system (`SampleRequest.Project` with an `ICoordinateSystem`), open the files with `CogFiles`, pick an
 overview with `CogFiles.ChooseImage` and let `RasterFill` sample them (see `SwissAlti3DSource` and
-`CopernicusDemSource`). Good candidates: Austria's 1 m ALS DTM (BEV, CC BY 4.0, COG in EPSG:3035), France's
-LiDAR HD and BD ORTHO (IGN, open licence), Bavaria's DGM1 and DOP40, and the USGS 3DEP and NAIP (public domain).
+`CopernicusDemSource`; `Usgs3Dep1MeterSource` and `NaipSource` find their files through a catalog API and read
+overlapping files newest first, a pass each). Good candidates: Austria's 1 m ALS DTM (BEV, CC BY 4.0, COG in
+EPSG:3035), France's LiDAR HD and BD ORTHO (IGN, open licence), Bavaria's DGM1 and DOP40.
