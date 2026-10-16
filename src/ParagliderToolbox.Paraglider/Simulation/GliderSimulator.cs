@@ -104,6 +104,12 @@ public sealed record SimulatorSettings
     public float PitchDamping { get; init; } = 1;
 
     /// <summary>
+    /// Gets the aerodynamic damping of local canopy surface motion (skin flutter, rippling and folding of the surface
+    /// triangles normal to themselves, relative to their strip's rigid motion); 0 turns it off.
+    /// </summary>
+    public float SurfaceDamping { get; init; } = 1;
+
+    /// <summary>
     /// Gets how fast the pilot's inputs can change (full travel per second; letting go is twice as fast): hands and feet
     /// don't move instantly, and a step input yanks the light canopy around. 0 applies the inputs at once.
     /// </summary>
@@ -182,6 +188,7 @@ public sealed class GliderSimulator
     private readonly float[] _stripFirmness, _nodeFirmness, _stripStiffening, _nodeStiffening;
     private readonly float _trimDynamicPressure;
     private readonly bool[] _tensionOnly;
+    private readonly bool[] _taut;
     private readonly SurfacePair[] _pairs;
     private readonly List<int> _crossed = [];
     private readonly float[] _dragDiameter;
@@ -211,12 +218,15 @@ public sealed class GliderSimulator
         public float[] X = [];
         public float[] BaseWeight = [];
         public float[] RearWeight = [];
+        public float[] UpperSign = [];
         public int[] Surface = [];
         public bool HasInlet;
         public float RestFlap;
         public float Alpha;
         public float Airspeed;
         public float CenterOfPressure = 0.3f;
+        public int PairedTriangles;
+        public int[] SupportLines = [];
         public int Index;
     }
 
@@ -241,6 +251,7 @@ public sealed class GliderSimulator
         _compliance = new float[constraints];
         _compression = new float[constraints];
         _tensionOnly = new bool[constraints];
+        _taut = new bool[constraints];
         _deflated = new float[constraints];
         _bend = new bool[constraints];
         _damping = new float[constraints];
@@ -473,6 +484,7 @@ public sealed class GliderSimulator
             _velocities[i] = velocity;
         }
         Array.Fill(_pressure, 1f);
+        Array.Fill(_taut, true);
         PilotLoad = Gravity * MathF.Max(0, _model.Nodes[_model.Pilot].Mass);
         LoadFactor = 1;
         foreach (var strip in _strips) strip.Airspeed = 0;
@@ -545,7 +557,7 @@ public sealed class GliderSimulator
             // Damping only of the motion relative to the center of mass, so it doesn't act like drag.
             var center = invMass > 0 ? momentum / invMass : Vector3.Zero;
             for (int i = 0; i < _count; i++) _velocities[i] = center + (_velocities[i] - center) * damping;
-            if (_settings.LineDamping > 0 || _settings.FabricDamping > 0) DampConstraints();
+            if (_settings.LineDamping > 0 || _settings.FabricDamping > 0 || _settings.SurfaceDamping > 0) DampConstraints(h);
             if (track)
             {
                 double e4 = SystemEnergy(false, h);
@@ -692,11 +704,24 @@ public sealed class GliderSimulator
             // Below about a sixth of its pressure a cell is limp; from about 85 % it holds its full shape.
             float inflation = Math.Clamp((_pressure[s] - 0.15f) / 0.7f, 0, 1);
             inflation = inflation * inflation * (3 - 2 * inflation);
-            _stripFirmness[s] = inflation;
-            // An inflated cell is as stiff as its pressure, which follows the dynamic pressure (not below half of trim's, so a
-            // wing that stops for a moment keeps some shape).
+            float lineSupport = 1f;
+            var supportLines = _strips[s].SupportLines;
+            if (inflation < 0.85f && supportLines.Length > 0)
+            {
+                bool anyTaut = false;
+                for (int k = 0; k < supportLines.Length; k++)
+                {
+                    if (_taut[supportLines[k]]) { anyTaut = true; break; }
+                }
+                lineSupport = anyTaut ? 1f : 0f;
+            }
+            float unloadSoftening = 1f - 0.4f * (1f - inflation) * (1f - lineSupport);
+            _stripFirmness[s] = inflation * unloadSoftening;
+            // An inflated cell is as stiff as its pressure and line load, which follows the dynamic pressure (not below half
+            // of trim's, so a wing that stops for a moment keeps some shape).
             float exponent = _settings.FirmnessAirspeedExponent;
-            _stripStiffening[s] = exponent > 0 ? Math.Clamp(MathF.Pow(q / _trimDynamicPressure, exponent), 0.5f, 4f) : 1;
+            float dynamicStiffening = exponent > 0 ? Math.Clamp(MathF.Pow(q / _trimDynamicPressure, exponent), 0.5f, 4f) : 1;
+            _stripStiffening[s] = dynamicStiffening * unloadSoftening;
         }
         for (int i = 0; i < _count; i++)
         {
@@ -797,20 +822,23 @@ public sealed class GliderSimulator
     // each such constraint loses the configured share (stiff lines and ripstop are nearly inelastic). Damping the positions
     // instead (XPBD damping) fights the solver's own corrections running down the line chains in its single pass, which
     // softens the lines and pitches the canopy back.
-    private void DampConstraints()
+    private void DampConstraints(float h)
     {
+        float softShare = Math.Clamp(_settings.SurfaceDamping * 2f * h, 0, 1);
         for (int i = 0; i < _ca.Length; i++)
         {
-            float share = _damping[i];
-            if (share <= 0) continue;
             int a = _ca[i], b = _cb[i];
             float wa = _inverseMass[a], wb = _inverseMass[b];
             float w = wa + wb;
             if (w == 0) continue;
             var d = _positions[a] - _positions[b];
             float length = d.Length();
-            // Only while taut (lines) or stretched (fabric).
-            if (length < 1e-9f || length < _effectiveRest[i]) continue;
+            if (length < 1e-9f) continue;
+            bool stretched = length >= _effectiveRest[i];
+            float share = stretched && !_bend[i]
+                ? _damping[i]
+                : (_deflated[i] > 0 || _bend[i]) ? MathF.Max(_damping[i], softShare) : 0;
+            if (share <= 0) continue;
             var n = d / length;
             float relative = Vector3.Dot(_velocities[a] - _velocities[b], n);
             float fraction = Math.Clamp(share, 0, 1);
@@ -836,6 +864,7 @@ public sealed class GliderSimulator
             float length = d.Length();
             if (length < 1e-9f) continue;
             float c = length - _effectiveRest[i];
+            _taut[i] = c >= -1e-4f;
             if (c < 0 && _tensionOnly[i]) continue;
             float alpha = c < 0 ? _compression[i] : _compliance[i];
             if (_deflated[i] > 0 && (c < 0 || _bend[i]))
@@ -912,7 +941,7 @@ public sealed class GliderSimulator
         float aspect = MathF.Max(1, _model.InducedAspectRatio > 0 ? _model.InducedAspectRatio : _model.ProjectedAspectRatio);
         if (_settings.Aerodynamics) for (int s = 0; s < _strips.Length; s++) ApplyStripAerodynamics(_strips[s], rho, wind, aspect);
         UpdatePressure(dt);
-        if (_settings.Pressure) for (int s = 0; s < _strips.Length; s++) ApplyPressure(_strips[s], _pressure[s], rho);
+        if (_settings.Pressure || _settings.SurfaceDamping > 0) for (int s = 0; s < _strips.Length; s++) ApplyPressure(_strips[s], _pressure[s], rho);
         float power = 0;
         for (int i = 0; i < _count; i++) power += Vector3.Dot(_forces[i] - _weight[i], _velocities[i] - wind);
         ForcePower = power;
@@ -995,7 +1024,9 @@ public sealed class GliderSimulator
         var throat = (p[strip.ThroatUpperA] + p[strip.ThroatLowerA] + p[strip.ThroatUpperB] + p[strip.ThroatLowerB]) * 0.25f;
         var noseAxis = throat - le;
         float noseAngle = MathF.Atan2(Vector3.Dot(noseAxis, up), Vector3.Dot(noseAxis, chordDir));
-        strip.InletAlpha = chordAlphaDegrees - (noseAngle - strip.RestNoseAngle) * 180 / MathF.PI;
+        float noseDrop = noseAngle - strip.RestNoseAngle;
+        if (chordAlphaDegrees > 30f && noseDrop > 0) noseDrop = 0;
+        strip.InletAlpha = chordAlphaDegrees - noseDrop * 180 / MathF.PI;
         // Where the inlet faces: into the trim flow at rest, turning with the nose. The angle to the oncoming flow is in
         // 3D, so flow along the span (a folded tip, sideslip) passes the inlet by instead of ramming into it.
         float turned = (strip.InletAlpha - strip.RestAlpha) * MathF.PI / 180;
@@ -1016,12 +1047,24 @@ public sealed class GliderSimulator
 
         float q = 0.5f * rho * speed * speed;
         float area = chordLength * spanLength;
+        float brakedStall = Math.Clamp((alphaDegrees - 32f) / 15f, 0f, 1f)
+            * Math.Clamp((flap - 0.25f) / 0.2f, 0f, 1f)
+            * Math.Clamp((0.5f - (float)inflation) / 0.35f, 0f, 1f);
+        float eta = 0.5f * (_model.Sections[_model.Strips[strip.Index].SectionA].Eta + _model.Sections[_model.Strips[strip.Index].SectionB].Eta);
         // The flap's drag acts on the deflected rear of the profile (behind the mid station), the rest around the center of
         // pressure.
-        var flapForce = flowDir * (float)(_settings.FlapDrag * flap * flap * q * area);
-        var force = (liftDir * (float)cl + flowDir * (float)cd) * (q * area) - flapForce;
+        var flapForce = flowDir * (_settings.FlapDrag * flap * flap * q * area);
+        var stallFold = Vector3.Zero;
+        if (brakedStall > 0)
+        {
+            // In a deep braked stall the separated wake spills around the unloaded tips instead of pushing the arched ribs
+            // radially outward, blowing the center back while the tips fold inward and forward into a horseshoe.
+            var inward = -eta * spanDir - 0.45f * MathF.Abs(eta) * up - 0.25f * (3f * eta * eta - 1f) * chordDir;
+            stallFold = inward * (brakedStall * 1.5f * q * area);
+        }
+        var force = (liftDir * (float)cl + flowDir * (float)cd) * (q * area) - flapForce + stallFold;
         _canopyLift += liftDir * (float)(cl * q * area);
-        _canopyDrag += flowDir * (float)(cd * q * area);
+        _canopyDrag += flowDir * (float)(cd * q * area) + stallFold;
         _dragTerms.Profile += (float)(profileCd * q * area);
         _dragTerms.Induced += (float)(cl * induced * q * area);
         _dragTerms.Flap += _settings.FlapDrag * flap * flap * q * area;
@@ -1043,9 +1086,13 @@ public sealed class GliderSimulator
             _forces[strip.TeB] += couple;
             AeroPower -= moment * pitchRate;
         }
+        float upperBias = cl < 0 && inflation < 0.8 ? 1f : 0f;
+        var liftForce = upperBias > 0 ? liftDir * (float)(cl * q * area) : Vector3.Zero;
         for (int k = 0; k < weights.Length; k++)
         {
-            var nodeForce = force * weights[k] + flapForce * strip.RearWeight[k];
+            float w = weights[k];
+            var nodeForce = force * w + flapForce * strip.RearWeight[k];
+            if (upperBias > 0) nodeForce += liftForce * (w * upperBias * strip.UpperSign[k]);
             _forces[strip.Nodes[k]] += nodeForce;
             AeroPower += Vector3.Dot(nodeForce, _velocities[strip.Nodes[k]] - wind);
         }
@@ -1053,13 +1100,14 @@ public sealed class GliderSimulator
         {
             var flapDragForce = flapForce * _recordShare;
             var lift = liftDir * (float)(cl * q * area * _recordShare);
-            var drag = flowDir * (float)(cd * q * area * _recordShare) - flapDragForce;
+            var drag = (flowDir * (float)(cd * q * area) + stallFold) * _recordShare - flapDragForce;
             _stripLift[strip.Index] += lift;
             _stripDrag[strip.Index] += drag + flapDragForce;
             for (int k = 0; k < weights.Length; k++)
             {
-                _nodeLift[strip.Nodes[k]] += lift * weights[k];
-                _nodeDrag[strip.Nodes[k]] += drag * weights[k] + flapDragForce * strip.RearWeight[k];
+                float w = weights[k];
+                _nodeLift[strip.Nodes[k]] += lift * (w * (1f + upperBias * strip.UpperSign[k]));
+                _nodeDrag[strip.Nodes[k]] += drag * w + flapDragForce * strip.RearWeight[k];
             }
         }
 
@@ -1162,24 +1210,62 @@ public sealed class GliderSimulator
         alpha = ((alpha + 180) % 360 + 360) % 360 - 180;
         if (alpha <= closing - 3) return -0.25f;
         if (alpha < closing) return -0.25f + (ram + 0.25f) * (alpha - (closing - 3)) / 3;
+        if (alpha > 45f && facing > 60f)
+        {
+            float stall = Math.Clamp((alpha - 45f) / 15f, 0f, 1f) * Math.Clamp((facing - 60f) / 15f, 0f, 1f);
+            ram = MathF.Min(ram, 0.05f - 0.30f * stall);
+        }
         return ram;
     }
 
     private void ApplyPressure(StripData strip, float pressure, float rho)
     {
-        if (strip.Surface.Length == 0 || pressure == 0) return;
+        if (strip.Surface.Length == 0) return;
         float q = 0.5f * rho * strip.Airspeed * strip.Airspeed;
-        float p = pressure * _model.InternalPressureCoefficient * q;
+        float staticPressure = _settings.Pressure ? pressure * _model.InternalPressureCoefficient * q : 0;
+        float dampScale = _settings.Aerodynamics ? _settings.SurfaceDamping * 0.5f * rho : 0;
+        if (staticPressure == 0 && dampScale <= 0) return;
         var surface = strip.Surface;
-        for (int t = 0; t < surface.Length; t += 3)
+        if (staticPressure != 0)
         {
-            int a = surface[t], b = surface[t + 1], c = surface[t + 2];
-            // Half the cross product is the area-weighted outward normal.
-            var force = Vector3.Cross(_positions[b] - _positions[a], _positions[c] - _positions[a]) * (0.5f * p / 3);
-            _forces[a] += force;
-            PressurePower += Vector3.Dot(force, _velocities[a] + _velocities[b] + _velocities[c]);
-            _forces[b] += force;
-            _forces[c] += force;
+            for (int t = 0; t < surface.Length; t += 3)
+            {
+                int a = surface[t], b = surface[t + 1], c = surface[t + 2];
+                var force = Vector3.Cross(_positions[b] - _positions[a], _positions[c] - _positions[a]) * (0.5f * staticPressure / 3);
+                _forces[a] += force;
+                PressurePower += Vector3.Dot(force, _velocities[a] + _velocities[b] + _velocities[c]);
+                _forces[b] += force;
+                _forces[c] += force;
+            }
+        }
+        int quadTriangles = strip.PairedTriangles * 6;
+        if (dampScale > 0 && quadTriangles > 0)
+        {
+            for (int t = 0; t < quadTriangles; t += 6)
+            {
+                int a1 = surface[t], b1 = surface[t + 1], c1 = surface[t + 2];
+                int a2 = surface[t + 3], b2 = surface[t + 4], c2 = surface[t + 5];
+                var areaNormal = (Vector3.Cross(_positions[b1] - _positions[a1], _positions[c1] - _positions[a1])
+                    + Vector3.Cross(_positions[b2] - _positions[a2], _positions[c2] - _positions[a2])) * 0.5f;
+                float areaSq = areaNormal.LengthSquared();
+                if (areaSq < 1e-10f) continue;
+                float area = MathF.Sqrt(areaSq);
+                var normal = areaNormal / area;
+                int d0 = a1;
+                bool b1Shared = b1 == b2 || b1 == c2;
+                int d1 = b1Shared ? b1 : c1;
+                int w0 = b1Shared ? c1 : b1;
+                int w1 = b2 == d1 ? c2 : b2;
+                var velFold = (_velocities[d0] + _velocities[d1] - (_velocities[w0] + _velocities[w1])) * 0.5f;
+                float vNormal = Vector3.Dot(velFold, normal);
+                float dampPressure = dampScale * (0.5f * strip.Airspeed + MathF.Abs(vNormal)) * vNormal;
+                var dampForce = normal * (dampPressure * area * 0.25f);
+                _forces[d0] -= dampForce;
+                _forces[d1] -= dampForce;
+                _forces[w0] += dampForce;
+                _forces[w1] += dampForce;
+                PressurePower -= Vector3.Dot(dampForce, _velocities[d0] + _velocities[d1] - (_velocities[w0] + _velocities[w1]));
+            }
         }
     }
 
@@ -1190,6 +1276,7 @@ public sealed class GliderSimulator
         var nodes = new List<int>();
         var xs = new List<float>();
         var weights = new List<float>();
+        var upperSigns = new List<float>();
         foreach (var section in new[] { a, b })
         {
             foreach (bool upper in section.Upper.Count > 0 ? new[] { true, false } : new[] { false })
@@ -1209,7 +1296,22 @@ public sealed class GliderSimulator
                     // The node's share of the strip's area (proportional to its mass, so light nodes near a densely
                     // sampled nose aren't overloaded); the linear tilt then puts the center of pressure in place.
                     weights.Add(coverage);
+                    upperSigns.Add(section.Upper.Count > 0 && k > 1 && k < chain.Count - 1 ? (upper ? 0.2f : -0.2f) : 0f);
                 }
+            }
+        }
+        var supportLines = new List<int>();
+        for (int radius = 0; radius <= 1 && supportLines.Count == 0; radius++)
+        {
+            for (int c = 0; c < _model.Constraints.Count; c++)
+            {
+                var constraint = _model.Constraints[c];
+                if (constraint.Kind != ConstraintKind.Line) continue;
+                int canopyNode = _model.Nodes[constraint.A].Section >= 0 ? constraint.A : (_model.Nodes[constraint.B].Section >= 0 ? constraint.B : -1);
+                if (canopyNode < 0) continue;
+                int section = _model.Nodes[canopyNode].Section;
+                if (Math.Abs(section - strip.SectionA) <= radius || Math.Abs(section - strip.SectionB) <= radius)
+                    supportLines.Add(c);
             }
         }
         // The first node behind the nose on a surface (the camber surface of a single-surface proxy).
@@ -1233,8 +1335,10 @@ public sealed class GliderSimulator
             LeA = a.LeadingEdge, TeA = a.TrailingEdge, LeB = b.LeadingEdge, TeB = b.TrailingEdge,
             MidA = Mid(a), MidB = Mid(b),
             ThroatUpperA = Throat(a, true), ThroatLowerA = Throat(a, false), ThroatUpperB = Throat(b, true), ThroatLowerB = Throat(b, false),
-            Nodes = nodes.ToArray(), X = xs.ToArray(), BaseWeight = weights.ToArray(),
+            Nodes = nodes.ToArray(), X = xs.ToArray(), BaseWeight = weights.ToArray(), UpperSign = upperSigns.ToArray(),
             Surface = strip.Surface.ToArray(), HasInlet = strip.HasInlet,
+            PairedTriangles = a.Upper.Count > 0 && strip.Surface.Count >= (a.Upper.Count + 1) * 12 ? (a.Upper.Count + 1) * 2 : 0,
+            SupportLines = supportLines.ToArray(),
         };
         // Where the flap's airload goes: the nodes behind the mid station, by their share of the area.
         float hinge = _model.Nodes[data.MidA].Chord;

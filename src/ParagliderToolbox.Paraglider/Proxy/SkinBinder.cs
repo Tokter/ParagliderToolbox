@@ -223,6 +223,10 @@ public sealed class SkinBinder
 public sealed class ProxyDeformer
 {
     private readonly (int ChordPrev, int ChordNext, int SpanPrev, int SpanNext)[] _neighbors;
+    private readonly float[] _restChordLength;
+    private readonly float[] _restSpanLength;
+    private readonly int[] _oppositeNode;
+    private readonly float[] _restThickness;
     private readonly int[] _attachments;
     private readonly Matrix4x4[] _restInverse;
 
@@ -236,6 +240,28 @@ public sealed class ProxyDeformer
         _attachments = attachments?.ToArray() ?? [];
         NodeCount = model.Nodes.Count;
         var rest = model.Nodes.Select(n => n.Position).ToArray();
+        _restChordLength = new float[NodeCount];
+        _restSpanLength = new float[NodeCount];
+        _oppositeNode = Enumerable.Repeat(-1, NodeCount).ToArray();
+        _restThickness = new float[NodeCount];
+        foreach (var s in model.Sections)
+        {
+            if (s.Upper.Count != s.Lower.Count) continue;
+            for (int k = 0; k < s.Upper.Count; k++)
+            {
+                int u = s.Upper[k], l = s.Lower[k];
+                _oppositeNode[u] = l;
+                _oppositeNode[l] = u;
+                _restThickness[u] = _restThickness[l] = Vector3.Distance(rest[u], rest[l]);
+            }
+        }
+        for (int i = 0; i < NodeCount; i++)
+        {
+            var (cp, cn, sp, sn) = _neighbors[i];
+            if (cp < 0 && cn < 0) continue;
+            _restChordLength[i] = (rest[cn >= 0 ? cn : i] - rest[cp >= 0 ? cp : i]).Length();
+            _restSpanLength[i] = (rest[sn >= 0 ? sn : i] - rest[sp >= 0 ? sp : i]).Length();
+        }
         _restInverse = new Matrix4x4[JointCount];
         RestFrames = new Matrix4x4[JointCount];
         for (int i = 0; i < JointCount; i++)
@@ -269,12 +295,28 @@ public sealed class ProxyDeformer
         if (cp < 0 && cn < 0) return Matrix4x4.CreateTranslation(p);
         var chord = positions[cn >= 0 ? cn : i] - positions[cp >= 0 ? cp : i];
         var span = positions[sn >= 0 ? sn : i] - positions[sp >= 0 ? sp : i];
-        if (chord.LengthSquared() < 1e-12f || span.LengthSquared() < 1e-12f) return Matrix4x4.CreateTranslation(p);
-        var x = Vector3.Normalize(chord);
+        float chordLenSq = chord.LengthSquared(), spanLenSq = span.LengthSquared();
+        if (chordLenSq < 1e-12f || spanLenSq < 1e-12f) return Matrix4x4.CreateTranslation(p);
+        float chordLen = MathF.Sqrt(chordLenSq);
+        float spanLen = MathF.Sqrt(spanLenSq);
+        var x = chord / chordLen;
         var z = Vector3.Cross(x, span);
         if (z.LengthSquared() < 1e-12f) return Matrix4x4.CreateTranslation(p);
         z = Vector3.Normalize(z);
         var y = Vector3.Cross(z, x);
+
+        float chordScale = _restChordLength[i] > 1e-6f ? Math.Clamp(chordLen / _restChordLength[i], 0.65f, 1.15f) : 1f;
+        float spanScale = _restSpanLength[i] > 1e-6f ? Math.Clamp(spanLen / _restSpanLength[i], 0.55f, 1.15f) : 1f;
+        int opp = _oppositeNode[i];
+        float thicknessRatio = opp >= 0 && _restThickness[i] > 1e-6f
+            ? Math.Clamp(Vector3.Distance(p, positions[opp]) / _restThickness[i], 0.25f, 1.25f)
+            : 1f;
+        float archBoost = thicknessRatio > 0.8f && spanScale < 1f ? 1f + 0.35f * (1f - spanScale) : 1f;
+        float normalScale = Math.Clamp(thicknessRatio * archBoost, 0.25f, 1.35f);
+
+        x *= chordScale;
+        y *= normalScale;
+        z *= spanScale;
         return new Matrix4x4(
             x.X, x.Y, x.Z, 0,
             y.X, y.Y, y.Z, 0,

@@ -235,11 +235,14 @@ public class SimulationTests
     {
         var sim = Simulator();
         Average(sim, 10);
+        float width = CanopyWidth(sim);
         Ramp(sim, b => sim.Inputs.BrakeLeft = sim.Inputs.BrakeRight = b);
         Average(sim, 5);
-        // The wing is back and the flow comes from below and behind, across the inlets: the cells lose most of their air.
-        Assert.True(sim.CellPressure.ToArray().Average() < 0.2f, "the stalled cells lose pressure");
+        // The wing is back and the flow comes from below and behind, across the inlets: the cells lose most of their air
+        // and the unloaded canopy folds inward along the span into a stalled horseshoe.
+        Assert.True(sim.CellPressure.ToArray().Average() < 0.2f, $"the stalled cells lose pressure ({sim.CellPressure.ToArray().Average():F2})");
         Assert.True(Enumerable.Range(0, sim.Model.Strips.Count).Where(s => sim.Model.Strips[s].HasInlet).Average(s => sim.StripInletFacing(s)) > 60);
+        Assert.True(CanopyWidth(sim) < width * 0.85f, $"stalled width {CanopyWidth(sim):F2} vs trim {width:F2}");
 
         Ramp(sim, b => sim.Inputs.BrakeLeft = sim.Inputs.BrakeRight = 1 - b);
         Average(sim, 10);
@@ -247,6 +250,7 @@ public class SimulationTests
         Assert.InRange(sim.CenterAngleOfAttack, 3, 15);
         Assert.InRange(airspeed * 3.6f, 25, 50);
         Assert.InRange(sink, 0.5f, 3f);
+        Assert.True(CanopyWidth(sim) > width - 0.5f, $"recovered width {CanopyWidth(sim):F2} vs trim {width:F2}");
     }
 
     [Theory]

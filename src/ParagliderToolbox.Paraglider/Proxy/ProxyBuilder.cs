@@ -43,22 +43,22 @@ public sealed record ProxyMaterial
     public float Fabric { get; init; } = 2e-7f;
 
     /// <summary>Gets the compliance of the fabric of an inflated cell when compressed.</summary>
-    public float FabricCompression { get; init; } = 4e-4f;
+    public float FabricCompression { get; init; } = 6e-4f;
 
     /// <summary>Gets the compliance of the surface diagonals (bias stretch of the fabric) when stretched.</summary>
     public float Shear { get; init; } = 2e-5f;
 
     /// <summary>Gets the compliance of the surface diagonals of an inflated cell when compressed.</summary>
-    public float ShearCompression { get; init; } = 2e-5f;
+    public float ShearCompression { get; init; } = 2e-4f;
 
     /// <summary>Gets the compliance of the ribs (profile height and diagonals) when stretched.</summary>
     public float Rib { get; init; } = 2e-7f;
 
     /// <summary>Gets the compliance of the ribs of an inflated cell when compressed.</summary>
-    public float RibCompression { get; init; } = 1e-3f;
+    public float RibCompression { get; init; } = 1.5e-3f;
 
     /// <summary>Gets the compliance of the bending constraints of an inflated cell.</summary>
-    public float Bend { get; init; } = 4e-3f;
+    public float Bend { get; init; } = 6e-3f;
 
     /// <summary>
     /// Gets the compliance against compression and bending in the trailing edge bay (behind the last line row and the rear
