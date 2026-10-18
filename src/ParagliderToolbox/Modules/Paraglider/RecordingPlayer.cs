@@ -227,12 +227,19 @@ public sealed partial class RecordingPlayer : ObservableObject, IDisposable
             input.CollapseLeft > 0 ? "collapse left" : null, input.CollapseRight > 0 ? "collapse right" : null,
             input.Frontal > 0 ? "frontal" : null, input.BigEars > 0 ? "big ears" : null, input.WindY != 0 ? "gust" : null,
         }.Where(s => s != null));
+        string launch = recording.Start == SimulationStart.Ground
+            ? string.Create(CultureInfo.CurrentCulture,
+                $"   wind {MathF.Sqrt(input.WindX * input.WindX + input.WindZ * input.WindZ) * 3.6f:0} km/h   A risers {input.ARiserLeft:P0}/{input.ARiserRight:P0}   walk {MathF.Sqrt(input.WalkX * input.WalkX + input.WalkZ * input.WalkZ) * 3.6f:0} km/h")
+            : "";
         Telemetry = string.Create(CultureInfo.CurrentCulture,
-            $"{Time,5:0.00} / {Duration:0.00} s   flight {t.Time:0.0} s   airspeed {t.Airspeed * 3.6f:0} km/h   vario {t.VerticalSpeed:+0.0;-0.0} m/s   " +
+            $"{Time,5:0.00} / {Duration:0.00} s   flight {t.Time:0.0} s{launch}   airspeed {t.Airspeed * 3.6f:0} km/h   vario {t.VerticalSpeed:+0.0;-0.0} m/s   " +
             $"G {t.LoadFactor:0.0}   AoA {t.AngleOfAttack:0}°   deflated cells {t.DeflatedCells}   " +
             $"brakes {input.BrakeLeft:P0}/{input.BrakeRight:P0}   bar {input.SpeedBar:P0}   shift {input.WeightShift:+0.00;-0.00}{(pulses.Length > 0 ? "   " + pulses : "")}");
         Moved?.Invoke(this, _scene.FollowPoint(_shown));
     }
+
+    /// <summary>Gets the height of the ground in the scene for a recorded launch, or null.</summary>
+    public float? GroundHeight => _node.Recording.GroundHeight;
 
     /// <inheritdoc/>
     public void Dispose()

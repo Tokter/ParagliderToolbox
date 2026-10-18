@@ -50,6 +50,27 @@ public class ProxyTests
         Assert.All(proxy.Nodes, n => Assert.Contains(n.Id, used));
     }
 
+    [Theory]
+    [InlineData(ProxyComplexity.Arcade)]
+    [InlineData(ProxyComplexity.Medium)]
+    public void ARiserControls_PullTheirSidesARiser_AndOpenItsMaillonLink(ProxyComplexity complexity)
+    {
+        var proxy = Generate(complexity).Proxy.Model;
+        foreach (var (name, side) in new[] { ("ARiserLeft", 1), ("ARiserRight", -1) })
+        {
+            var control = proxy.FindControl(name)!;
+            var pulled = control.Constraints.Select((c, k) => (Constraint: proxy.Constraints[c], Travel: control.Travel[k])).ToList();
+            var riser = Assert.Single(pulled, p => p.Constraint.Kind == ConstraintKind.Riser);
+            Assert.Equal("Riser A", riser.Constraint.Name);
+            Assert.Equal(side, proxy.Nodes[riser.Constraint.A].Side);
+            Assert.Equal(ProxyBuilder.ARiserTravel, riser.Travel);
+            var link = Assert.Single(pulled, p => p.Constraint.Kind == ConstraintKind.Harness);
+            Assert.EndsWith("AB", link.Constraint.Name);
+            Assert.True(link.Travel < 0, "the link lengthens");
+            Assert.Empty(control.Strips);
+        }
+    }
+
     [Fact]
     public void PressureCells_AreClosedAndFaceOutward()
     {

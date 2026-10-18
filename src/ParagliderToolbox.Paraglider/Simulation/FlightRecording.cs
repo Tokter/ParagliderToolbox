@@ -5,17 +5,19 @@ using ParagliderToolbox.Paraglider.Design;
 
 namespace ParagliderToolbox.Paraglider.Simulation;
 
-/// <summary>The pilot's inputs for one simulation step (see <see cref="SimulationInputs"/>).</summary>
+/// <summary>The pilot's inputs for one simulation step (see <see cref="SimulationInputs"/>; the walk without its vertical part).</summary>
 public readonly record struct FlightInputs(
     float BrakeLeft, float BrakeRight, float SpeedBar, float WeightShift,
     float CollapseLeft, float CollapseRight, float Frontal, float BigEars,
-    float WindX, float WindY, float WindZ)
+    float WindX, float WindY, float WindZ,
+    float ARiserLeft = 0, float ARiserRight = 0, float WalkX = 0, float WalkZ = 0)
 {
     /// <summary>Gets the inputs <paramref name="inputs"/> holds now.</summary>
     public static FlightInputs From(SimulationInputs inputs) => new(
         inputs.BrakeLeft, inputs.BrakeRight, inputs.SpeedBar, inputs.WeightShift,
         inputs.CollapseLeft, inputs.CollapseRight, inputs.Frontal, inputs.BigEars,
-        inputs.Wind.X, inputs.Wind.Y, inputs.Wind.Z);
+        inputs.Wind.X, inputs.Wind.Y, inputs.Wind.Z,
+        inputs.ARiserLeft, inputs.ARiserRight, inputs.Walk.X, inputs.Walk.Z);
 
     /// <summary>Sets <paramref name="inputs"/> to these.</summary>
     public void ApplyTo(SimulationInputs inputs)
@@ -29,6 +31,9 @@ public readonly record struct FlightInputs(
         inputs.Frontal = Frontal;
         inputs.BigEars = BigEars;
         inputs.Wind = new Vector3(WindX, WindY, WindZ);
+        inputs.ARiserLeft = ARiserLeft;
+        inputs.ARiserRight = ARiserRight;
+        inputs.Walk = new Vector3(WalkX, 0, WalkZ);
     }
 }
 
@@ -52,8 +57,8 @@ public readonly record struct FlightTelemetry(
 public sealed record FlightFrames(Vector3[][] Positions, FlightTelemetry[] Telemetry);
 
 /// <summary>
-/// A recorded flight of a paraglider: the design it was flown with, the pilot's inputs for every step since the
-/// simulation started (so <see cref="GliderSimulator"/> flies it again exactly), and the proxy's node positions and the
+/// A recorded flight of a paraglider: the design it was flown with, how the simulation started and the pilot's inputs for
+/// every step since (so <see cref="GliderSimulator"/> flies it again exactly), and the proxy's node positions and the
 /// telemetry of every frame while recording (so it replays as it was seen, whatever the simulator does by now).
 /// </summary>
 /// <remarks>
@@ -68,6 +73,21 @@ public sealed record FlightRecording
 
     /// <summary>Gets the design it was flown with.</summary>
     public GliderDesign? Design { get; init; }
+
+    /// <summary>Gets how the simulation started (<see cref="GliderSimulator.Reset(SimulationStart)"/>): in flight, or on the ground to launch.</summary>
+    public SimulationStart Start { get; init; }
+
+    /// <summary>
+    /// Gets the version of the frame encoding: 0 for recordings made before launches (the telemetry's inputs without the
+    /// A risers and the walk), <see cref="CurrentFrameVersion"/> for new ones.
+    /// </summary>
+    public int FrameVersion { get; init; }
+
+    /// <summary>The version of the frame encoding new recordings are written in.</summary>
+    public const int CurrentFrameVersion = 1;
+
+    /// <summary>Gets the height of the ground in the frames' coordinates, for a flight with a <see cref="GliderSimulator.Ground"/>; otherwise null.</summary>
+    public float? GroundHeight { get; init; }
 
     /// <summary>Gets the number of proxy nodes (every frame has a position for each).</summary>
     public int ProxyNodes { get; init; }
@@ -123,7 +143,7 @@ public sealed record FlightRecording
         var offsets = new short[ProxyNodes * 3];
         for (int f = 0; f < FrameCount; f++)
         {
-            telemetry[f] = ReadTelemetry(reader);
+            telemetry[f] = ReadTelemetry(reader, FrameVersion);
             var pilot = new Vector3(reader.ReadSingle(), reader.ReadSingle(), reader.ReadSingle());
             var frame = positions[f] = new Vector3[ProxyNodes];
             for (int i = 0; i < offsets.Length; i++) offsets[i] += reader.ReadInt16();
@@ -172,17 +192,19 @@ public sealed record FlightRecording
         writer.Write(t.AngleOfAttack);
         writer.Write(t.DeflatedCells);
         var i = t.Inputs;
-        foreach (float value in new[] { i.BrakeLeft, i.BrakeRight, i.SpeedBar, i.WeightShift, i.CollapseLeft, i.CollapseRight, i.Frontal, i.BigEars, i.WindX, i.WindY, i.WindZ })
+        foreach (float value in new[] { i.BrakeLeft, i.BrakeRight, i.SpeedBar, i.WeightShift, i.CollapseLeft, i.CollapseRight, i.Frontal, i.BigEars, i.WindX, i.WindY, i.WindZ,
+                     i.ARiserLeft, i.ARiserRight, i.WalkX, i.WalkZ })
             writer.Write(value);
     }
 
-    private static FlightTelemetry ReadTelemetry(BinaryReader reader)
+    private static FlightTelemetry ReadTelemetry(BinaryReader reader, int version)
     {
         float time = reader.ReadSingle(), airspeed = reader.ReadSingle(), vertical = reader.ReadSingle(), load = reader.ReadSingle(), aoa = reader.ReadSingle();
         int deflated = reader.ReadInt32();
-        var v = new float[11];
-        for (int k = 0; k < v.Length; k++) v[k] = reader.ReadSingle();
-        return new FlightTelemetry(time, airspeed, vertical, load, aoa, deflated, new FlightInputs(v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8], v[9], v[10]));
+        var v = new float[15];
+        for (int k = 0; k < (version >= 1 ? 15 : 11); k++) v[k] = reader.ReadSingle();
+        return new FlightTelemetry(time, airspeed, vertical, load, aoa, deflated,
+            new FlightInputs(v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8], v[9], v[10], v[11], v[12], v[13], v[14]));
     }
 }
 
@@ -196,14 +218,16 @@ public sealed class FlightRecorder
     private readonly GliderSimulator _simulator;
     private readonly GliderDesign _design;
     private readonly float _stepTime;
+    private readonly SimulationStart _start;
     private readonly List<FlightInputChange> _inputs = [];
     private readonly List<(Vector3 Pilot, Vector3[] Positions, FlightTelemetry Telemetry)> _frames = [];
     private int _step;
     private int _firstStep;
     private (double X, double Y, double Z) _origin;
+    private float? _ground;
 
     /// <summary>Initializes a recorder for a simulator that is about to fly its first step.</summary>
-    /// <param name="simulator">The simulator, just created or reset.</param>
+    /// <param name="simulator">The simulator, just created or reset (<see cref="GliderSimulator.Reset(SimulationStart)"/>).</param>
     /// <param name="design">The design its proxy was built from.</param>
     /// <param name="stepTime">The fixed step it is flown with (s).</param>
     public FlightRecorder(GliderSimulator simulator, GliderDesign design, float stepTime = 1 / 60f)
@@ -211,6 +235,7 @@ public sealed class FlightRecorder
         _simulator = simulator;
         _design = design;
         _stepTime = stepTime;
+        _start = simulator.Start;
     }
 
     /// <summary>Gets the steps from one frame to the next (2: 30 frames a second at 60 steps).</summary>
@@ -242,6 +267,7 @@ public sealed class FlightRecorder
         _frames.Clear();
         _firstStep = _step;
         _origin = _simulator.Origin;
+        _ground = _simulator.Ground is { } ground ? (float)(ground - _origin.Y) : null;
         IsRecording = true;
     }
 
@@ -253,6 +279,9 @@ public sealed class FlightRecorder
         return new FlightRecording
         {
             Design = _design.Clone(),
+            Start = _start,
+            FrameVersion = FlightRecording.CurrentFrameVersion,
+            GroundHeight = _ground,
             ProxyNodes = _simulator.Model.Nodes.Count,
             StepTime = _stepTime,
             StepsPerFrame = StepsPerFrame,

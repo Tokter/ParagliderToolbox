@@ -48,6 +48,36 @@ public class GamepadPilotTests
     }
 
     [Fact]
+    public void Launching_TheTriggersPullTheARisers_AndAHeldTriggerTakesOnTheBrakeOnlyOnceLetGo()
+    {
+        var pilot = new GamepadPilot { TriggersPullARisers = true };
+        pilot.Read(Pad());
+        var pulled = pilot.Read(Pad(leftTrigger: 0.8f));
+        Assert.Null(pulled.BrakeLeft);
+        Assert.InRange(pulled.ARiserLeft!.Value, 0.75f, 0.8f);
+
+        // The wing is up: the triggers are the brakes again, the held one once it has been let go.
+        pilot.TriggersPullARisers = false;
+        var held = pilot.Read(Pad(leftTrigger: 0.9f, rightTrigger: 0.3f));
+        Assert.Null(held.BrakeLeft);
+        Assert.Null(held.BrakeRight);
+        Assert.Null(held.ARiserLeft);
+        Assert.Null(pilot.Read(Pad()).BrakeLeft);
+        var braked = pilot.Read(Pad(leftTrigger: 0.5f));
+        Assert.InRange(braked.BrakeLeft!.Value, 0.45f, 0.5f);
+        Assert.Null(braked.ARiserLeft);
+    }
+
+    [Fact]
+    public void TheStick_IsReportedEveryRead_ForWalking()
+    {
+        var pilot = new GamepadPilot();
+        Assert.Equal(new Vector2(0, 1), pilot.Read(Pad(new Vector2(0, 1))).Stick);
+        Assert.Equal(new Vector2(0, 1), pilot.Read(Pad(new Vector2(0, 1))).Stick);
+        Assert.Equal(Vector2.Zero, pilot.Read(Pad(new Vector2(0.05f, 0))).Stick);
+    }
+
+    [Fact]
     public void WithoutAGamepad_NothingChanges()
     {
         var pilot = new GamepadPilot();

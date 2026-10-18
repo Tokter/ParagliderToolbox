@@ -70,10 +70,20 @@ Adding a paraglider asks for a starting point:
   shift, asymmetric and frontal collapses, big ears, gusts, stalls and spins, with the high resolution model following
   the proxy. The canopy is fabric held in shape by its pressure: empty cells go limp, so collapses fold the canopy under,
   big ears fold the tips, a frontal folds the span into a horseshoe and a full stall crumples it; it reopens as the cells
-  refill. The **Forces** view (5) draws the lift, canopy drag, line drag and pilot drag as arrows from where the
+  refill. Parts of the canopy that fold onto each other don't pass through each other (self-collision of the proxy's
+  nodes, after Matthias Müller's Ten Minute Physics). The **Forces** view (5) draws the lift, canopy drag, line drag and pilot drag as arrows from where the
   simulation applies them, as long as they are strong: per node, or summed per strip at its center of pressure; with
   the totals and the force balance's L/D. It also shows the load the pilot hangs in the harness with (weight and
   inertia: down, and out of a turn), and the telemetry shows the G load.
+- **Launch** (choose Launch next to Simulate, or L): the pilot stands on flat ground with the wing laid out behind them
+  in an arc, its cells empty and its lines slack; the wind picks up to the strength you set (4 m/s by default) and
+  fills the wing. With a game controller the triggers pull the left and right A riser while the wing is low behind you,
+  lifting its leading edge; once it is up (70°), or ahead of you, they are the brakes again (a held trigger takes on the
+  brake once you let go of it). The left stick walks and runs, relative to the camera, as far as your feet grip: a
+  rising wing pulls hard, lightens you and can drag you. The telemetry shows the wind, how high the wing stands, what
+  the triggers do and whether you stand. The wing flies on its own physics, so it needs flying: catch its overshoot with
+  the brakes, get under it when it drifts to a side. Flat ground and a standing start take strong wind or a run to
+  take off.
 - **Recorded flights** (Record, Ctrl+R): stopping a recording adds it under the paraglider, like a polar. Select it to
   replay it: play, pause, scrub the timeline, step frame by frame, slow it down to a tenth, and orbit and zoom around the
   glider meanwhile, with the flight data of every moment (airspeed, vario, G, angle of attack, deflated cells, the
@@ -106,11 +116,11 @@ Adding a paraglider asks for a starting point:
 | Home, numpad 1 3 7, numpad 5, Shift+Z | Frame, views, orthographic, wireframe |
 | 1 2 3 4 | Show canopy, rigging, proxy, ribs |
 | 5, 6, D, - and = | Show the aerodynamic forces; per node or per strip; drag ×5; shorter and longer arrows |
-| P / R | Simulate or pause / reset |
+| P / R / L | Simulate or pause / reset / switch between flight and launch |
 | Q, E, F, B, G | Collapse left, right, frontal, big ears, gust |
 | Ctrl+R | Record the flight (again to stop: it is added under the paraglider) |
 | Ctrl+P | Record the polar (again to cancel) |
-| Game controller (Xbox) | Left and right trigger: brakes; left stick: weight shift (left/right) and speed bar (forward); A: simulate or pause; left and right bumper: collapse left and right |
+| Game controller (Xbox) | Left and right trigger: brakes; left stick: weight shift (left/right) and speed bar (forward); A: simulate or pause; left and right bumper: collapse left and right. Launching: the triggers pull the A risers until the wing is up, the left stick walks while you stand |
 | In a recorded flight: P / R, comma and period, - and = | Play or pause / restart, step a frame back and on, slower and faster |
 
 ### Renders

@@ -32,6 +32,7 @@ public partial class RecordingNode : ProjectNode
             OnPropertyChanged(nameof(Recorded));
             OnPropertyChanged(nameof(Duration));
             OnPropertyChanged(nameof(Started));
+            OnPropertyChanged(nameof(Start));
             OnPropertyChanged(nameof(Complexity));
         }
     }
@@ -42,10 +43,13 @@ public partial class RecordingNode : ProjectNode
     [InspectableProperty("Duration", "Recording", Order = 2, IsReadOnly = true, Description = "The recorded time and frames (30 a second).")]
     public string Duration => string.Create(CultureInfo.CurrentCulture, $"{_recording.Duration:0.0} s ({_recording.FrameCount} frames)");
 
-    [InspectableProperty("Started at", "Recording", Order = 3, IsReadOnly = true,
+    [InspectableProperty("Start", "Recording", Order = 3, IsReadOnly = true, Description = "How the simulation started: in the trim glide, or laid out on the ground to launch.")]
+    public string Start => _recording.Start == SimulationStart.Ground ? "Launch, on the ground" : "In flight";
+
+    [InspectableProperty("Started at", "Recording", Order = 4, IsReadOnly = true,
         Description = "The simulated time the recording started at; the inputs from the start of the flight are kept, so it can be flown again exactly.")]
     public string Started => string.Create(CultureInfo.CurrentCulture, $"{_recording.FirstStep * _recording.StepTime:0.0} s into the flight");
 
-    [InspectableProperty("Proxy", "Recording", Order = 4, IsReadOnly = true, Description = "The proxy complexity and node count it was simulated with.")]
+    [InspectableProperty("Proxy", "Recording", Order = 5, IsReadOnly = true, Description = "The proxy complexity and node count it was simulated with.")]
     public string Complexity => $"{_recording.Design?.ProxyComplexity.ToString() ?? "?"}, {_recording.ProxyNodes} nodes";
 }

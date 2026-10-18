@@ -23,8 +23,30 @@ public sealed class SimulationInputs
     /// <summary>Pulls the outermost A lines on both sides in: big ears.</summary>
     public float BigEars { get; set; }
 
+    /// <summary>Pulls the left A riser down: launching, it lifts the leading edge off the ground.</summary>
+    public float ARiserLeft { get; set; }
+
+    /// <summary>Pulls the right A riser down.</summary>
+    public float ARiserRight { get; set; }
+
     /// <summary>Gets or sets the wind (m/s), e.g. a gust from below.</summary>
     public Vector3 Wind { get; set; }
+
+    /// <summary>
+    /// Gets or sets the velocity (m/s; horizontal, Y is ignored) the pilot walks or runs with while standing on the
+    /// <see cref="GliderSimulator.Ground"/>, up to <see cref="SimulatorSettings.RunSpeed"/>.
+    /// </summary>
+    public Vector3 Walk { get; set; }
+}
+
+/// <summary>How a simulation starts (see <see cref="GliderSimulator.Reset(SimulationStart)"/>).</summary>
+public enum SimulationStart
+{
+    /// <summary>Flying in the trim glide.</summary>
+    Flight,
+
+    /// <summary>On the ground, to launch: the pilot standing, the wing laid out behind them (<see cref="GliderSimulator.ResetOnGround"/>).</summary>
+    Ground,
 }
 
 /// <summary>Tuning of the simulator.</summary>
@@ -97,6 +119,25 @@ public sealed record SimulatorSettings
     public float SurfaceSeparation { get; init; } = 0.15f;
 
     /// <summary>
+    /// Gets the distance (m) canopy nodes keep from each other where parts of the canopy that are apart at rest fold onto
+    /// each other (self-collision with the nodes as particles, after Müller's Ten Minute Physics); 0 turns it off. It has
+    /// to be about the spacing of the proxy's nodes, or a node slips between two others.
+    /// </summary>
+    public float SelfCollisionDistance { get; init; } = 0.4f;
+
+    /// <summary>
+    /// Gets the distance (m) below which two canopy nodes at rest never collide: that close, they are one piece of fabric
+    /// (a cell's two skins, neighboring stations and cells), which has to be free to fold, crumple and empty.
+    /// </summary>
+    public float SelfCollisionExclusion { get; init; } = 1f;
+
+    /// <summary>
+    /// Gets how fast colliding canopy nodes lose their relative velocity (per second; fabric on fabric friction, applied as
+    /// Müller's unconditionally stable velocity averaging).
+    /// </summary>
+    public float SelfCollisionFriction { get; init; } = 20f;
+
+    /// <summary>
     /// Gets the aerodynamic pitch damping of the strips as a multiple of thin-airfoil theory (quasi-steady
     /// Cm = −π/8 · ωc/V about the quarter chord, applied as a couple on the leading and trailing edge, so it only removes
     /// energy); 0 turns it off. The strip flow is sampled at the center of pressure, which doesn't see the rotation.
@@ -132,6 +173,36 @@ public sealed record SimulatorSettings
 
     /// <summary>Gets the extra drag coefficient of an empty cell (a crumpled bag of fabric).</summary>
     public float DeflatedDrag { get; init; } = 0.3f;
+
+    /// <summary>
+    /// Gets the airspeed (m/s) below which empty cells get limper still in a simulation with a
+    /// <see cref="GliderSimulator.Ground"/> (a launch): their deflated compliance grows by (<c>LimpAirspeed</c> /
+    /// airspeed)², up to 10 times. The deflated compliance only has to be soft against air loads; in light wind on the
+    /// ground an empty wing must fold under its own weight, so it lies flat and takes its shape as the wind fills it.
+    /// Without a ground (flying) nothing changes.
+    /// </summary>
+    public float LimpAirspeed { get; init; } = 4f;
+
+    /// <summary>Gets the friction coefficient of the canopy and the lines on the ground (fabric on grass).</summary>
+    public float GroundFriction { get; init; } = 0.6f;
+
+    /// <summary>
+    /// Gets the friction coefficient of the pilot's feet: how hard they can push off the ground to walk, and hold against
+    /// the wing's pull, relative to the weight they stand with (a wing lifting the pilot lightens them, and drags them).
+    /// </summary>
+    public float FootFriction { get; init; } = 1f;
+
+    /// <summary>Gets the height of the carabiners above the ground while the pilot stands (m).</summary>
+    public float HarnessHeight { get; init; } = 1.2f;
+
+    /// <summary>Gets the fastest the pilot runs (m/s).</summary>
+    public float RunSpeed { get; init; } = 5f;
+
+    /// <summary>Gets how fast the pilot speeds up and slows down walking (m/s²).</summary>
+    public float RunAcceleration { get; init; } = 3f;
+
+    /// <summary>Gets how fast the standing pilot turns to face the way the wing faces (degrees per second).</summary>
+    public float TurnRate { get; init; } = 30f;
 }
 
 /// <summary>
@@ -165,6 +236,15 @@ public sealed record SimulatorSettings
 /// attack of the nose itself and close as it flattens; pulled A lines close the cells they hold
 /// (<see cref="ProxyControl.Strips"/>). See docs/ProxyFormat.md for the formulas.
 /// </para>
+/// <para>
+/// Self-collision (<see cref="SimulatorSettings.SelfCollisionDistance"/>): canopy nodes that are apart at rest keep a
+/// distance from each other, so parts of a crumpled canopy don't pass through each other.
+/// </para>
+/// <para>
+/// On the ground (<see cref="Ground"/>, <see cref="ResetOnGround"/>): the canopy and the lines rest on it with friction,
+/// and the pilot stands on it, walks (<see cref="SimulationInputs.Walk"/>) with as much grip as the weight on their feet
+/// gives, and holds the harness upright facing the way the wing faces until the wing lifts them off.
+/// </para>
 /// </remarks>
 public sealed class GliderSimulator
 {
@@ -185,7 +265,7 @@ public sealed class GliderSimulator
     private readonly bool[] _bend;
     private readonly float[] _damping;
     private readonly int[] _nodeStripA, _nodeStripB;
-    private readonly float[] _stripFirmness, _nodeFirmness, _stripStiffening, _nodeStiffening;
+    private readonly float[] _stripFirmness, _nodeFirmness, _stripStiffening, _nodeStiffening, _stripLimpness, _nodeLimpness;
     private readonly float _trimDynamicPressure;
     private readonly bool[] _tensionOnly;
     private readonly bool[] _taut;
@@ -196,6 +276,28 @@ public sealed class GliderSimulator
     private readonly (string Name, int[] Constraints, float[] Travel, int[] Strips)[] _controls;
     private float[] _closure = [];
     private readonly int[] _pilotHarness = new int[2];
+
+    // Standing: the carabiners (left, right) held upright at their rest offsets from the pilot (facing +Z, turned by
+    // the heading), the pilot's height above the ground, the walking velocity and the heading (forward is (sin, 0, cos)).
+    private readonly int[] _carabiners = [-1, -1];
+    private readonly Vector3[] _harnessOffset = new Vector3[2];
+    private readonly float _standingHeight;
+    private Vector3 _walkVelocity;
+    private float _heading;
+    private bool _contact;
+    private bool _settling;
+
+    // How far above the ground the canopy and line nodes rest (m).
+    private const float NodeClearance = 0.02f;
+
+    // Self-collision: the canopy nodes and their rest positions, the spatial hash (cell starts and entries, as indices
+    // into the canopy nodes) and the node pairs that can touch in this step (pairs of node ids).
+    private readonly int[] _canopyNodes;
+    private readonly Vector3[] _restPositions;
+    private int[] _cellStart = [], _cellEntries = [];
+    private int[] _collisionPairs = new int[64];
+    private int _collisionPairCount;
+    private float[] _speeds = [];
 
     private readonly StripData[] _strips;
     private readonly float[] _pressure;
@@ -287,7 +389,15 @@ public sealed class GliderSimulator
         {
             _pilotHarness[0] = harness[0];
             _pilotHarness[1] = harness[1];
+            var pilotRest = model.Nodes[model.Pilot].Position;
+            for (int k = 0; k < 2; k++)
+            {
+                _carabiners[k] = _ca[harness[k]] == model.Pilot ? _cb[harness[k]] : _ca[harness[k]];
+                _harnessOffset[k] = model.Nodes[_carabiners[k]].Position - pilotRest;
+            }
+            _standingHeight = _settings.HarnessHeight - (_harnessOffset[0].Y + _harnessOffset[1].Y) * 0.5f;
         }
+        else _standingHeight = _settings.HarnessHeight;
 
         // The lift slope (per radian) and the stall angle of the polar, for the flap lift.
         _liftSlope = (Polar(5).Lift - Polar(0).Lift) / (5 * Math.PI / 180);
@@ -296,6 +406,8 @@ public sealed class GliderSimulator
         _pairs = BuildSurfacePairs(model);
         for (int s = 0; s < _strips.Length; s++) _strips[s].Index = s;
         _pressure = new float[_strips.Length];
+        _canopyNodes = Enumerable.Range(0, _count).Where(i => model.Nodes[i].Kind is ProxyNodeKind.Upper or ProxyNodeKind.Lower or ProxyNodeKind.Camber).ToArray();
+        _restPositions = model.Nodes.Select(n => n.Position).ToArray();
 
         // The air inside the cells moves with the canopy: inertia (several kilograms, more than the fabric) but no
         // weight, spread over each cell's nodes.
@@ -330,6 +442,8 @@ public sealed class GliderSimulator
         _nodeFirmness = new float[_count];
         _stripStiffening = new float[_strips.Length];
         _nodeStiffening = new float[_count];
+        _stripLimpness = new float[_strips.Length];
+        _nodeLimpness = new float[_count];
         float trimSpeed = model.TrimAirspeed > 0 ? model.TrimAirspeed : 10f;
         _trimDynamicPressure = 0.5f * _settings.AirDensity * trimSpeed * trimSpeed;
         Reset();
@@ -472,6 +586,146 @@ public sealed class GliderSimulator
     /// <summary>Gets the upper skin nodes of the stations counted in <see cref="SurfaceCrossings"/>.</summary>
     public IReadOnlyList<int> CrossedNodes => _crossed;
 
+    /// <summary>Gets how the simulation started (<see cref="Reset()"/> or <see cref="ResetOnGround"/>).</summary>
+    public SimulationStart Start { get; private set; }
+
+    /// <summary>
+    /// Gets or sets the height (m, in world coordinates like <see cref="Origin"/>) of flat ground the glider rests and the
+    /// pilot stands on, or null for none. <see cref="ResetOnGround"/> puts it at 0, <see cref="Reset()"/> removes it.
+    /// </summary>
+    public double? Ground { get; set; }
+
+    /// <summary>Gets whether the pilot stands on the <see cref="Ground"/> (their feet carry some of their weight).</summary>
+    public bool PilotOnGround { get; private set; }
+
+    /// <summary>Gets the direction the pilot faces (a horizontal unit vector): standing, they turn to face the way the wing faces.</summary>
+    public Vector3 PilotForward => new(MathF.Sin(_heading), 0, MathF.Cos(_heading));
+
+    /// <summary>Gets the height of the pilot node above the ground while the pilot stands (m): the carabiners at <see cref="SimulatorSettings.HarnessHeight"/>.</summary>
+    public float StandingHeight => _standingHeight;
+
+    /// <summary>Gets whether the middle of the canopy is behind the pilot (against the way they face).</summary>
+    public bool CanopyBehindPilot
+    {
+        get
+        {
+            if (_model.Sections.Count == 0) return false;
+            var section = _model.Sections[_model.Sections.Count / 2];
+            var d = (_positions[section.LeadingEdge] + _positions[section.TrailingEdge]) * 0.5f - _positions[_model.Pilot];
+            return Vector3.Dot(d, PilotForward) < 0;
+        }
+    }
+
+    /// <summary>
+    /// Gets how high the canopy stands above the pilot (degrees): the angle of its middle above the horizon seen from the
+    /// pilot; a few degrees below 0 laid out on the ground, 90 overhead.
+    /// </summary>
+    public float CanopyElevation
+    {
+        get
+        {
+            if (_model.Sections.Count == 0) return 90;
+            var section = _model.Sections[_model.Sections.Count / 2];
+            var d = (_positions[section.LeadingEdge] + _positions[section.TrailingEdge]) * 0.5f - _positions[_model.Pilot];
+            return MathF.Atan2(d.Y, MathF.Sqrt(d.X * d.X + d.Z * d.Z)) * 180 / MathF.PI;
+        }
+    }
+
+    /// <summary>Starts the simulation over: in the trim glide (<see cref="Reset()"/>) or on the ground (<see cref="ResetOnGround"/>).</summary>
+    public void Reset(SimulationStart start)
+    {
+        if (start == SimulationStart.Ground) ResetOnGround();
+        else Reset();
+    }
+
+    /// <summary>
+    /// Lays the glider out on the ground (at height 0) for a launch: the pilot stands with the carabiners at
+    /// <see cref="SimulatorSettings.HarnessHeight"/>, facing +Z (into the wind); the canopy lies behind them in its arc
+    /// around them, upper surface up and the leading edge toward them, its cells empty and the lines slack. It then
+    /// settles for two seconds (not counted in <see cref="Time"/>) so it lies still.
+    /// </summary>
+    public void ResetOnGround()
+    {
+        Reset();
+        Start = SimulationStart.Ground;
+        var nodes = _model.Nodes;
+        var rest = nodes.Select(n => n.Position).ToArray();
+        var hinge = _carabiners[0] >= 0 ? (rest[_carabiners[0]] + rest[_carabiners[1]]) * 0.5f : rest[_model.Pilot] + new Vector3(0, 0.4f, 0);
+        float ground = hinge.Y - _settings.HarnessHeight;
+
+        // Swing the glider back about the carabiners' axis until the canopy stands behind the pilot, a wall facing them
+        // with the leading edge up; the pilot and the toggles in their hands stay. The outer part comes in toward the
+        // pilot (by up to 15% at the tips): lowered to the ground, the tips would lie farther away than their lines reach.
+        float halfSpan = MathF.Max(0.1f, rest.Max(p => MathF.Abs(p.X - hinge.X)));
+        for (int i = 0; i < _count; i++)
+        {
+            var r = rest[i] - hinge;
+            if (nodes[i].Kind is ProxyNodeKind.Pilot or ProxyNodeKind.Toggle)
+            {
+                _positions[i] = rest[i];
+                continue;
+            }
+            float side = MathF.Min(1, MathF.Abs(r.X) / halfSpan);
+            float inward = 1 - 0.15f * side * side * side;
+            _positions[i] = hinge + new Vector3(r.X * inward, r.Z, -r.Y * inward);
+        }
+
+        // Lay each section down on the ground: its trailing edge where it stands, its chord straight toward the pilot (so
+        // its lines only get slacker), the profile's shape kept (the upper surface up, the lowest point on the ground).
+        var sections = _model.Sections;
+        for (int s = 0; s < sections.Count; s++)
+        {
+            var section = sections[s];
+            var chain = ProxyBuilder.Chain(section, true).Concat(ProxyBuilder.Chain(section, false)).Distinct().ToList();
+            var le = rest[section.LeadingEdge];
+            var te = rest[section.TrailingEdge];
+            var forward = Vector3.Normalize(le - te);
+            var neighborSpan = Mid(sections[Math.Min(s + 1, sections.Count - 1)]) - Mid(sections[Math.Max(s - 1, 0)]);
+            var up = Vector3.Normalize(Vector3.Cross(neighborSpan, -forward));
+            var trailing = _positions[section.TrailingEdge] with { Y = ground };
+            var inward = Vector3.Normalize((hinge - trailing) with { Y = 0 });
+            // At the tips, where the arc curls around toward the pilot, the profiles lie square to it instead (laid
+            // toward the pilot they would overlap their neighbors).
+            float curl = Math.Clamp((MathF.Abs(section.Eta) - 0.88f) / 0.12f, 0, 1);
+            if (curl > 0)
+            {
+                var tangent = (_positions[sections[Math.Min(s + 1, sections.Count - 1)].TrailingEdge] - _positions[sections[Math.Max(s - 1, 0)].TrailingEdge]) with { Y = 0 };
+                var square = Vector3.Normalize(Vector3.Cross(Vector3.UnitY, tangent));
+                if (Vector3.Dot(square, inward) < 0) square = -square;
+                inward = Vector3.Normalize(Vector3.Lerp(inward, square, curl));
+            }
+            float lowest = chain.Min(n => Vector3.Dot(rest[n] - te, up));
+            foreach (int n in chain)
+            {
+                var r = rest[n] - te;
+                _positions[n] = trailing + inward * Vector3.Dot(r, forward) + Vector3.UnitY * (Vector3.Dot(r, up) - lowest + NodeClearance);
+            }
+        }
+        Vector3 Mid(ProxySection section) => (rest[section.LeadingEdge] + rest[section.TrailingEdge]) * 0.5f;
+
+        // Nothing below the ground (low knots of the wall), and the ground at 0.
+        for (int i = 0; i < _count; i++)
+        {
+            if (i != _model.Pilot) _positions[i].Y = MathF.Max(_positions[i].Y, ground + NodeClearance);
+            _positions[i].Y -= ground;
+        }
+        Array.Clear(_velocities);
+        Array.Fill(_pressure, 0f);
+        Ground = 0;
+        _heading = 0;
+        _walkVelocity = Vector3.Zero;
+        PilotOnGround = true;
+
+        // Let the lines down onto the ground and the empty cells flatten, slowly (heavily damped): knots falling from the
+        // height of the risers would yank the canopy into a heap.
+        _settling = true;
+        for (int step = 0; step < 120; step++) Step(1 / 60f);
+        _settling = false;
+        Array.Clear(_velocities);
+        _energy = default;
+        Time = 0;
+    }
+
     /// <summary>Puts the glider back in its rest shape, flying at the trim airspeed along the trim glide path.</summary>
     public void Reset()
     {
@@ -489,8 +743,13 @@ public sealed class GliderSimulator
         LoadFactor = 1;
         foreach (var strip in _strips) strip.Airspeed = 0;
         Origin = default;
-        _brakeLeft = _brakeRight = _speedBar = _collapseLeft = _collapseRight = _frontal = _bigEars = _weightShift = 0;
+        _brakeLeft = _brakeRight = _speedBar = _collapseLeft = _collapseRight = _frontal = _bigEars = _weightShift = _aRiserLeft = _aRiserRight = 0;
         Time = 0;
+        Start = SimulationStart.Flight;
+        Ground = null;
+        PilotOnGround = false;
+        _heading = 0;
+        _walkVelocity = Vector3.Zero;
     }
 
     // The pilot's load from the velocity change over the step (smoothed: the constrained pilot node jitters).
@@ -516,13 +775,16 @@ public sealed class GliderSimulator
     {
         if (dt <= 0) return;
         ApplyControls(dt);
+        if (Ground != null) UpdateStance(dt);
+        if (_settings.SelfCollisionDistance > 0) FindCollisionPairs(dt);
 
         var pilotVelocity = _velocities[_model.Pilot];
         int substeps = SubstepCount();
         float h = dt / substeps;
-        float damping = MathF.Max(0, 1 - _settings.Damping * h);
+        float damping = MathF.Max(0, 1 - (_settling ? 30 : _settings.Damping) * h);
         _recordShare = RecordForces ? 1f / substeps : 0;
         if (RecordForces) ClearRecordedForces();
+        _contact = false;
         for (int s = 0; s < substeps; s++)
         {
             // Forces every substep: the aerodynamic damping of the light canopy nodes is too stiff for a frame-long step.
@@ -543,6 +805,8 @@ public sealed class GliderSimulator
             SolveConstraints(h);
             double e2 = track ? SystemEnergy(true, h) : 0;
             SeparateSurfaces();
+            if (_collisionPairCount > 0) SolveSelfCollisions(h);
+            if (Ground is { } ground) ApplyGround((float)(ground - Origin.Y), h);
             double e3 = track ? SystemEnergy(true, h) : 0;
             float invH = 1 / h;
             float invMass = 0;
@@ -569,8 +833,94 @@ public sealed class GliderSimulator
             }
         }
         UpdateLoad(pilotVelocity, dt);
+        PilotOnGround = Ground != null && _contact;
         Time += dt;
         Rebase();
+    }
+
+    // Standing, the pilot walks at the speed they want (changing it at the run acceleration) and turns to face the way the
+    // wing faces (square to its span); in the air the walk is their speed over the ground, so they land running.
+    private void UpdateStance(float dt)
+    {
+        var velocity = _velocities[_model.Pilot] with { Y = 0 };
+        if (PilotOnGround)
+        {
+            var target = Inputs.Walk with { Y = 0 };
+            float speed = target.Length();
+            if (speed > _settings.RunSpeed) target *= _settings.RunSpeed / speed;
+            var change = target - _walkVelocity;
+            float step = _settings.RunAcceleration * dt;
+            _walkVelocity = change.Length() <= step ? target : _walkVelocity + Vector3.Normalize(change) * step;
+        }
+        else _walkVelocity = velocity;
+
+        // Where the wing faces: away from it while it is low (a crumpled wing on the ground has no direction of its own),
+        // square to its span as it rises overhead (sections run from the right tip to the left; left × up is forward).
+        var sections = _model.Sections;
+        if (sections.Count < 2) return;
+        Vector3 Mid(ProxySection s) => (_positions[s.LeadingEdge] + _positions[s.TrailingEdge]) * 0.5f;
+        var away = (_positions[_model.Pilot] - Mid(sections[sections.Count / 2])) with { Y = 0 };
+        var span = (Mid(sections[sections.Count * 3 / 4]) - Mid(sections[sections.Count / 4])) with { Y = 0 };
+        if (away.LengthSquared() < 1e-6f || span.LengthSquared() < 1e-6f) return;
+        float overhead = Math.Clamp((CanopyElevation - 30) / 30, 0, 1);
+        var forward = Vector3.Normalize(away) * (1 - overhead) + Vector3.Normalize(Vector3.Cross(span, Vector3.UnitY)) * overhead;
+        if (forward.LengthSquared() < 0.01f) return;
+        float wanted = MathF.Atan2(forward.X, forward.Z);
+        float turn = MathF.IEEERemainder(wanted - _heading, 2 * MathF.PI);
+        float rate = _settings.TurnRate * MathF.PI / 180 * dt;
+        _heading = MathF.IEEERemainder(_heading + Math.Clamp(turn, -rate, rate), 2 * MathF.PI);
+    }
+
+    // The ground: nodes below it go back onto it, and friction holds back how far they slid along it in this substep
+    // (Coulomb at the position level: by at most the friction coefficient times the depth they were pushed up by). The
+    // pilot stands on their legs: held up at standing height, their feet move them at the walking velocity as far as the
+    // weight on them grips, and they hold the harness upright, fully while standing and less as the wing lifts them.
+    private void ApplyGround(float ground, float h)
+    {
+        int pilot = _model.Pilot;
+        float floor = ground + NodeClearance;
+        float friction = _settings.GroundFriction;
+        for (int i = 0; i < _count; i++)
+        {
+            float depth = floor - _positions[i].Y;
+            if (depth <= 0 || i == pilot || _inverseMass[i] == 0) continue;
+            _positions[i].Y = floor;
+            Slide(i, Vector3.Zero, friction * depth, h);
+        }
+
+        float stand = ground + _standingHeight;
+        float lift = _positions[pilot].Y - stand;
+        float upright = Math.Clamp(1 - lift / 0.4f, 0, 1);
+        if (upright > 0 && _carabiners[0] >= 0)
+        {
+            float cos = MathF.Cos(_heading), sin = MathF.Sin(_heading);
+            for (int k = 0; k < 2; k++)
+            {
+                int c = _carabiners[k];
+                var o = _harnessOffset[k];
+                var target = _positions[pilot] + new Vector3(o.X * cos + o.Z * sin, o.Y, -o.X * sin + o.Z * cos);
+                float wc = _inverseMass[c], wp = _inverseMass[pilot];
+                if (wc + wp <= 0) continue;
+                var error = (_positions[c] - target) * (upright / (wc + wp));
+                _positions[c] -= error * wc;
+                _positions[pilot] += error * wp;
+            }
+        }
+
+        float sink = stand - _positions[pilot].Y;
+        if (sink < 0) return;
+        _contact = true;
+        _positions[pilot].Y = stand;
+        Slide(pilot, _walkVelocity, _settings.FootFriction * sink, h);
+    }
+
+    // Moves node i horizontally toward where the velocity would have taken it in this substep, by at most `limit` (m).
+    private void Slide(int i, Vector3 velocity, float limit, float h)
+    {
+        var slip = (_positions[i] - _previous[i] - velocity * h) with { Y = 0 };
+        float length = slip.Length();
+        if (length > limit) slip *= limit / length;
+        _positions[i] -= slip;
     }
 
     /// <summary>
@@ -624,7 +974,7 @@ public sealed class GliderSimulator
     }
 
     // The inputs as applied: they follow the pilot's at hand speed.
-    private float _brakeLeft, _brakeRight, _speedBar, _collapseLeft, _collapseRight, _frontal, _bigEars, _weightShift;
+    private float _brakeLeft, _brakeRight, _speedBar, _collapseLeft, _collapseRight, _frontal, _bigEars, _weightShift, _aRiserLeft, _aRiserRight;
 
     private float Follow(float applied, float target, float dt)
     {
@@ -645,6 +995,8 @@ public sealed class GliderSimulator
         _frontal = Follow(_frontal, Math.Clamp(Inputs.Frontal, 0, 1), dt);
         _bigEars = Follow(_bigEars, Math.Clamp(Inputs.BigEars, 0, 1), dt);
         _weightShift = Follow(_weightShift, Math.Clamp(Inputs.WeightShift, -1, 1), dt);
+        _aRiserLeft = Follow(_aRiserLeft, Math.Clamp(Inputs.ARiserLeft, 0, 1), dt);
+        _aRiserRight = Follow(_aRiserRight, Math.Clamp(Inputs.ARiserRight, 0, 1), dt);
         Array.Copy(_rest, _effectiveRest, _rest.Length);
         if (_closure.Length != _strips.Length) _closure = new float[_strips.Length];
         Array.Clear(_closure);
@@ -659,6 +1011,8 @@ public sealed class GliderSimulator
                 "CollapseRight" => _collapseRight,
                 "Frontal" => _frontal,
                 "BigEarsLeft" or "BigEarsRight" => _bigEars,
+                "ARiserLeft" => _aRiserLeft,
+                "ARiserRight" => _aRiserRight,
                 _ => 0,
             };
             if (input <= 0) continue;
@@ -722,16 +1076,20 @@ public sealed class GliderSimulator
             float exponent = _settings.FirmnessAirspeedExponent;
             float dynamicStiffening = exponent > 0 ? Math.Clamp(MathF.Pow(q / _trimDynamicPressure, exponent), 0.5f, 4f) : 1;
             _stripStiffening[s] = dynamicStiffening * unloadSoftening;
+            // Empty fabric in light wind folds under its own weight (on the ground).
+            float limp = _settings.LimpAirspeed / MathF.Max(_strips[s].Airspeed, 0.01f);
+            _stripLimpness[s] = _settings.Aerodynamics && Ground != null ? Math.Clamp(limp * limp, 1, 10) : 1;
         }
         for (int i = 0; i < _count; i++)
         {
             if (_nodeStripA[i] < 0)
             {
-                _nodeFirmness[i] = _nodeStiffening[i] = 1;
+                _nodeFirmness[i] = _nodeStiffening[i] = _nodeLimpness[i] = 1;
                 continue;
             }
             _nodeFirmness[i] = 0.5f * (_stripFirmness[_nodeStripA[i]] + _stripFirmness[_nodeStripB[i]]);
             _nodeStiffening[i] = 0.5f * (_stripStiffening[_nodeStripA[i]] + _stripStiffening[_nodeStripB[i]]);
+            _nodeLimpness[i] = 0.5f * (_stripLimpness[_nodeStripA[i]] + _stripLimpness[_nodeStripB[i]]);
         }
     }
 
@@ -818,6 +1176,102 @@ public sealed class GliderSimulator
         SurfaceCrossings = crossings;
     }
 
+    // The canopy node pairs that can come within the collision distance in this step, from a spatial hash (cells as big
+    // as that reach, so the 27 cells around a node hold all its candidates): the nodes move relative to each other by
+    // about twice a fast node's speed relative to the canopy's mean (the 98th percentile: a few light, jittery nodes
+    // would make every pair a candidate). Pairs close at rest never collide.
+    private void FindCollisionPairs(float dt)
+    {
+        int n = _canopyNodes.Length;
+        _collisionPairCount = 0;
+        if (n < 2) return;
+        var mean = Vector3.Zero;
+        foreach (int i in _canopyNodes) mean += _velocities[i];
+        mean /= n;
+        if (_speeds.Length != n) _speeds = new float[n];
+        for (int k = 0; k < n; k++) _speeds[k] = (_velocities[_canopyNodes[k]] - mean).LengthSquared();
+        Array.Sort(_speeds);
+        float fast = MathF.Sqrt(_speeds[Math.Max(0, n - 1 - n / 50)]);
+        float reach = _settings.SelfCollisionDistance + 2 * fast * dt;
+        float inverse = 1 / reach;
+        int size = 2 * n + 1;
+        if (_cellStart.Length != size + 1)
+        {
+            _cellStart = new int[size + 1];
+            _cellEntries = new int[n];
+        }
+        Array.Clear(_cellStart);
+        (int X, int Y, int Z) Cell(int node)
+        {
+            var p = _positions[node] * inverse;
+            return ((int)MathF.Floor(p.X), (int)MathF.Floor(p.Y), (int)MathF.Floor(p.Z));
+        }
+        int Bucket((int X, int Y, int Z) c) => (int)((uint)((c.X * 92837111) ^ (c.Y * 689287499) ^ (c.Z * 283923481)) % (uint)size);
+        for (int k = 0; k < n; k++) _cellStart[Bucket(Cell(_canopyNodes[k]))]++;
+        for (int b = 0, start = 0; b <= size; b++)
+        {
+            start += b < size ? _cellStart[b] : 0;
+            _cellStart[b] = start;
+        }
+        for (int k = 0; k < n; k++) _cellEntries[--_cellStart[Bucket(Cell(_canopyNodes[k]))]] = k;
+
+        float reach2 = reach * reach;
+        float exclusion2 = _settings.SelfCollisionExclusion * _settings.SelfCollisionExclusion;
+        for (int k = 0; k < n; k++)
+        {
+            int a = _canopyNodes[k];
+            var cell = Cell(a);
+            for (int x = cell.X - 1; x <= cell.X + 1; x++)
+            for (int y = cell.Y - 1; y <= cell.Y + 1; y++)
+            for (int z = cell.Z - 1; z <= cell.Z + 1; z++)
+            {
+                int bucket = Bucket((x, y, z));
+                for (int e = _cellStart[bucket]; e < _cellStart[bucket + 1]; e++)
+                {
+                    int other = _cellEntries[e];
+                    if (other <= k) continue;
+                    int b = _canopyNodes[other];
+                    // Buckets are shared by distant cells: count each pair once, from its own cell.
+                    if (Cell(b) != (x, y, z)) continue;
+                    if (Vector3.DistanceSquared(_positions[a], _positions[b]) > reach2) continue;
+                    if (Vector3.DistanceSquared(_restPositions[a], _restPositions[b]) < exclusion2) continue;
+                    if (_collisionPairCount * 2 + 2 > _collisionPairs.Length) Array.Resize(ref _collisionPairs, _collisionPairs.Length * 2);
+                    _collisionPairs[_collisionPairCount * 2] = a;
+                    _collisionPairs[_collisionPairCount * 2 + 1] = b;
+                    _collisionPairCount++;
+                }
+            }
+        }
+    }
+
+    // Pushes touching canopy nodes apart to the collision distance (by inverse mass), and moves their motion in this
+    // substep toward the pair's mean (friction that can't overshoot).
+    private void SolveSelfCollisions(float h)
+    {
+        float distance = _settings.SelfCollisionDistance;
+        float distance2 = distance * distance;
+        float friction = Math.Clamp(_settings.SelfCollisionFriction * h, 0, 1);
+        for (int k = 0; k < _collisionPairCount; k++)
+        {
+            int a = _collisionPairs[2 * k], b = _collisionPairs[2 * k + 1];
+            var d = _positions[b] - _positions[a];
+            float length2 = d.LengthSquared();
+            if (length2 >= distance2 || length2 < 1e-12f) continue;
+            float wa = _inverseMass[a], wb = _inverseMass[b], w = wa + wb;
+            if (w <= 0) continue;
+            float length = MathF.Sqrt(length2);
+            var push = d * ((distance - length) / (length * w));
+            _positions[a] -= push * wa;
+            _positions[b] += push * wb;
+            if (friction <= 0) continue;
+            var motionA = _positions[a] - _previous[a];
+            var motionB = _positions[b] - _previous[b];
+            var mean = (motionA * wb + motionB * wa) / w;
+            _positions[a] += (mean - motionA) * friction;
+            _positions[b] += (mean - motionB) * friction;
+        }
+    }
+
     // Damps taut lines and stretched fabric on the velocities, after the positions are solved: the relative velocity along
     // each such constraint loses the configured share (stiff lines and ripstop are nearly inelastic). Damping the positions
     // instead (XPBD damping) fights the solver's own corrections running down the line chains in its single pass, which
@@ -871,8 +1325,9 @@ public sealed class GliderSimulator
             {
                 // Inflated fabric holds its shape, empty fabric folds: blend the compliance (geometrically) by the cells' firmness.
                 float firm = 0.5f * (_nodeFirmness[a] + _nodeFirmness[b]);
+                float deflated = _deflated[i] * 0.5f * (_nodeLimpness[a] + _nodeLimpness[b]);
                 alpha /= 0.5f * (_nodeStiffening[a] + _nodeStiffening[b]);
-                alpha = firm >= 1 ? alpha : firm <= 0 ? _deflated[i] : MathF.Exp(firm * MathF.Log(alpha) + (1 - firm) * MathF.Log(_deflated[i]));
+                alpha = firm >= 1 ? alpha : firm <= 0 ? deflated : MathF.Exp(firm * MathF.Log(alpha) + (1 - firm) * MathF.Log(deflated));
             }
             alpha *= invH2;
             float lambda = -c / (w + alpha);
