@@ -876,7 +876,33 @@ public static class ProxyBuilder
         model.Controls.Add(speedBar);
         FillGaps(frontal);
         model.Controls.Add(frontal);
+
+        // Launching, the pilot pulls a side's A riser down toward the carabiner (pulling its maillon away from the B
+        // maillon's), which lifts the leading edge off the ground.
+        foreach (int side in new[] { 1, -1 })
+        {
+            var pull = new ProxyControl { Name = "ARiser" + (side > 0 ? "Left" : "Right") };
+            for (int i = 0; i < model.Constraints.Count; i++)
+            {
+                var c = model.Constraints[i];
+                if (model.Nodes[c.A].Side != side) continue;
+                if (c.Kind == ConstraintKind.Riser && c.Name is { Length: > 6 } name && name[^1] == 'A')
+                {
+                    pull.Constraints.Add(i);
+                    pull.Travel.Add(ARiserTravel);
+                }
+                else if (rows > 1 && c.Kind == ConstraintKind.Harness && c.Name is { } maillons && maillons.StartsWith("Maillons", StringComparison.Ordinal) && maillons.EndsWith("AB", StringComparison.Ordinal))
+                {
+                    pull.Constraints.Add(i);
+                    pull.Travel.Add(c.RestLength - MathF.Sqrt(c.RestLength * c.RestLength + ARiserTravel * ARiserTravel));
+                }
+            }
+            model.Controls.Add(pull);
+        }
     }
+
+    /// <summary>How far pulling an A riser shortens it (m): the hands pulling the risers in launches.</summary>
+    public const float ARiserTravel = 0.2f;
 
 
     // The canopy nodes a line holds up: walking up the cascade from its upper end.

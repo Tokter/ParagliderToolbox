@@ -161,7 +161,7 @@ public sealed class ProxyStrip
 /// <summary>A named group of constraints the pilot controls by changing their rest length (brakes, speed bar, collapse lines).</summary>
 public sealed class ProxyControl
 {
-    /// <summary>Gets or sets the control's name: BrakeLeft, BrakeRight, SpeedBar, CollapseLeft, CollapseRight, Frontal, BigEars.</summary>
+    /// <summary>Gets or sets the control's name: BrakeLeft, BrakeRight, SpeedBar, CollapseLeft, CollapseRight, Frontal, BigEarsLeft, BigEarsRight, ARiserLeft, ARiserRight.</summary>
     public string Name { get; set; } = string.Empty;
 
     /// <summary>Gets or sets the controlled constraints.</summary>
@@ -195,7 +195,7 @@ public sealed class ProxyPolar
 public sealed class ProxyModel
 {
     /// <summary>The version of the JSON format.</summary>
-    public const int CurrentFormatVersion = 2;
+    public const int CurrentFormatVersion = 3;
 
     public string Format { get; set; } = "ParagliderToolbox.Proxy";
     public int FormatVersion { get; set; } = CurrentFormatVersion;

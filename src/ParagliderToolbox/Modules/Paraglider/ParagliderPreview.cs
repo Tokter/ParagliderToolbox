@@ -20,12 +20,28 @@ using SkiaSharp;
 
 namespace ParagliderToolbox.Modules.Paraglider;
 
+/// <summary>What the paraglider preview simulates.</summary>
+public enum SimulationMode
+{
+    /// <summary>The glider flying, from its trim glide.</summary>
+    Flight,
+
+    /// <summary>A launch: the pilot standing on flat ground, the wing laid out behind them, the wind picking up.</summary>
+    Launch,
+}
+
 /// <summary>
 /// The live preview of a <see cref="ParagliderNode"/>: regenerates the model in the background whenever the design
 /// changes, shows it in a 3D scene (high resolution parts and the physics proxy), and simulates the proxy with the high
-/// resolution mesh skinned to it. The commands are the <see cref="Group"/> keybinding group, active while the preview
-/// has the focus.
+/// resolution mesh skinned to it, in flight or launching from the ground (<see cref="Mode"/>). The commands are the
+/// <see cref="Group"/> keybinding group, active while the preview has the focus.
 /// </summary>
+/// <remarks>
+/// Launching, the wind picks up to <see cref="MaxWind"/> at <see cref="WindRampRate"/>; while the wing is low behind the
+/// standing pilot the gamepad's triggers pull the A risers, from <see cref="LaunchedElevation"/> (or with the wing ahead
+/// of them) they are the brakes again (<see cref="TriggersPullARisers"/>), and the left stick walks, relative to the
+/// camera (<see cref="CameraYaw"/>), until the wing lifts the pilot off.
+/// </remarks>
 public sealed partial class ParagliderPreview : ObservableObject, IDisposable
 {
     /// <summary>The keybinding group of the preview's commands.</summary>
@@ -33,6 +49,17 @@ public sealed partial class ParagliderPreview : ObservableObject, IDisposable
 
     private const int PreviewTextureSize = 2048;
     private const float StepTime = 1 / 60f;
+
+    /// <summary>How fast the wind picks up in a launch (m/s per second).</summary>
+    public const float WindRampRate = 0.4f;
+
+    /// <summary>
+    /// The wing's elevation above the horizon (degrees, seen from the pilot) from which the triggers are the brakes again;
+    /// they pull the A risers again when it falls back 10° below it.
+    /// </summary>
+    public const float LaunchedElevation = 70;
+
+    private static readonly SimulatorSettings s_settings = new();
 
     private readonly ParagliderNode _node;
     private readonly Func<Modules.Paraglider.ParagliderActions> _actions;
@@ -57,6 +84,7 @@ public sealed partial class ParagliderPreview : ObservableObject, IDisposable
     private double _lastFrame;
     private float _pending;
     private readonly Dictionary<string, (float Start, float Until)> _releaseAt = [];
+    private Vector2 _stick;
 
     [ObservableProperty] private GliderModel? _model;
     [ObservableProperty] private string _status = "Generating…";
@@ -77,6 +105,20 @@ public sealed partial class ParagliderPreview : ObservableObject, IDisposable
     [ObservableProperty] private bool _exaggerateDrag;
     [ObservableProperty] private float _forceScale = 1;
     [ObservableProperty] private string _forceLegend = string.Empty;
+    [ObservableProperty] private SimulationMode _mode;
+    [ObservableProperty] private float _maxWind = 4;
+    [ObservableProperty] private float _aRiserLeft;
+    [ObservableProperty] private float _aRiserRight;
+    [ObservableProperty] private bool _triggersPullARisers;
+
+    /// <summary>
+    /// Gets or sets the camera's turn around the vertical axis (radians, <see cref="OrbitCamera.Yaw"/>): launching, the left
+    /// stick walks relative to it (forward is away from the camera). The view sets it every frame.
+    /// </summary>
+    public float CameraYaw { get; set; }
+
+    /// <summary>Gets the height of the ground in the scene while launching, or null.</summary>
+    public float? GroundHeight => _simulator?.Ground is { } ground ? (float)(ground - _displayOrigin.Y) : null;
 
     /// <summary>Initializes the preview of <paramref name="node"/>.</summary>
     public ParagliderPreview(ParagliderNode node, Func<ParagliderActions> actions)
@@ -100,6 +142,9 @@ public sealed partial class ParagliderPreview : ObservableObject, IDisposable
 
     /// <summary>Occurs when the simulation stopped and the glider is back at rest (the view frames it again).</summary>
     public event EventHandler? SimulationStopped;
+
+    /// <summary>Occurs when a simulation starts somewhere else than the rest pose (a launch: the view frames it).</summary>
+    public event EventHandler? SimulationStarted;
 
     /// <summary>Occurs every simulation frame with the point the camera should follow.</summary>
     public event EventHandler<Vector3>? Simulated;
@@ -226,7 +271,13 @@ public sealed partial class ParagliderPreview : ObservableObject, IDisposable
     }
 
     [RelayCommand]
-    [property: Command("ResetSimulation", Group, Label = "Reset simulation", Icon = MaterialIcons.RestartAlt, Description = "Put the glider back in its trim glide", DefaultKeybinding = "R")]
+    [property: Command("ToggleLaunch", Group, Label = "Launch simulation", Icon = MaterialIcons.Paragliding,
+        Description = "Switch between the flight simulation and the launch: the wing laid out on the ground behind the pilot, the wind picking up", DefaultKeybinding = "L")]
+    private void ToggleLaunch() => Mode = Mode == SimulationMode.Launch ? SimulationMode.Flight : SimulationMode.Launch;
+
+    [RelayCommand]
+    [property: Command("ResetSimulation", Group, Label = "Reset simulation", Icon = MaterialIcons.RestartAlt,
+        Description = "Start the simulation over: in the trim glide, or laid out on the ground to launch", DefaultKeybinding = "R")]
     private void ResetSimulation()
     {
         bool wasRunning = IsSimulating;
@@ -362,7 +413,8 @@ public sealed partial class ParagliderPreview : ObservableObject, IDisposable
         if (_simulator is null)
         {
             // Recording the forces costs next to nothing, and they can be shown while paused.
-            _simulator = new GliderSimulator(model.Proxy.Model) { RecordForces = true };
+            _simulator = new GliderSimulator(model.Proxy.Model, s_settings) { RecordForces = true };
+            if (Mode == SimulationMode.Launch) _simulator.ResetOnGround();
             // Logs the inputs from the first step, so a recording started later can be flown again exactly.
             _recorder = new FlightRecorder(_simulator, model.Design, StepTime);
             _forceLayoutPerStrip = null;
@@ -373,6 +425,14 @@ public sealed partial class ParagliderPreview : ObservableObject, IDisposable
             _shown = new Vector3[nodes];
             CaptureDisplay(_simulator, _currentDisplay);
             CaptureDisplay(_simulator, _previousDisplay);
+            if (_simulator.Start == SimulationStart.Ground)
+            {
+                _currentDisplay.CopyTo(_shown, 0);
+                _scene.Pose(_shown);
+                PosePilot(_simulator);
+                UpdateTriggerRole();
+                SimulationStarted?.Invoke(this, EventArgs.Empty);
+            }
         }
         IsSimulating = true;
         _clock.Restart();
@@ -401,12 +461,56 @@ public sealed partial class ParagliderPreview : ObservableObject, IDisposable
         _releaseAt.Clear();
         Telemetry = string.Empty;
         ForceLegend = string.Empty;
+        UpdateTriggerRole();
         UpdateVisibility();
+        _scene.HidePilot();
         _scene.ShowRest();
         SimulationStopped?.Invoke(this, EventArgs.Empty);
     }
 
     [ObservableProperty] private string _toggleSimulationCommandLabel = "Simulate";
+
+    // A new mode starts over (running on if it ran).
+    partial void OnModeChanged(SimulationMode value)
+    {
+        bool running = IsSimulating;
+        StopSimulation();
+        if (running) StartSimulation();
+    }
+
+    // Launching, the triggers pull the A risers while the wing is low behind the standing pilot, and are the brakes once
+    // it is up or ahead of them; switching, the hands let go of what they held.
+    private void UpdateTriggerRole()
+    {
+        bool risers = TriggersPullARisers;
+        if (Mode != SimulationMode.Launch || _simulator is not { } sim) risers = false;
+        else if (risers) risers = sim.CanopyBehindPilot && sim.CanopyElevation < LaunchedElevation;
+        else risers = sim.PilotOnGround && sim.CanopyBehindPilot && sim.CanopyElevation < LaunchedElevation - 10;
+        if (risers == TriggersPullARisers) return;
+        TriggersPullARisers = risers;
+        _gamepad.TriggersPullARisers = risers;
+        if (risers) BrakeLeft = BrakeRight = 0;
+        else ARiserLeft = ARiserRight = 0;
+    }
+
+    // The launch wind: from ahead of the pilot (+Z), picking up to its strength.
+    private Vector3 BaseWind(float time) =>
+        Mode == SimulationMode.Launch ? new Vector3(0, 0, -Math.Min(MaxWind, WindRampRate * time)) : Vector3.Zero;
+
+    // The left stick turned into where the camera looks: forward walks away from it.
+    private Vector3 Walk()
+    {
+        var right = new Vector3(MathF.Cos(CameraYaw), 0, -MathF.Sin(CameraYaw));
+        var forward = new Vector3(-MathF.Sin(CameraYaw), 0, -MathF.Cos(CameraYaw));
+        return (right * _stick.X + forward * _stick.Y) * s_settings.RunSpeed;
+    }
+
+    // The pilot stands (or hangs) at the pilot node, facing the way the simulator turned them.
+    private void PosePilot(GliderSimulator sim)
+    {
+        if (Model is not { } model) return;
+        _scene.PosePilot(_shown[model.Proxy.Model.Pilot] - new Vector3(0, sim.StandingHeight, 0), sim.PilotForward);
+    }
 
     /// <summary>Advances the simulation to the current time and updates the scene; the view calls it every rendered frame.</summary>
     /// <returns>Whether another frame is needed.</returns>
@@ -418,6 +522,7 @@ public sealed partial class ParagliderPreview : ObservableObject, IDisposable
         _lastFrame = now;
 
         // The game controller: its moved controls also move the sliders; A may have paused the simulation.
+        UpdateTriggerRole();
         PollGamepad();
         if (!IsSimulating) return false;
 
@@ -426,6 +531,9 @@ public sealed partial class ParagliderPreview : ObservableObject, IDisposable
         inputs.BrakeRight = BrakeRight;
         inputs.SpeedBar = SpeedBar;
         inputs.WeightShift = WeightShift;
+        inputs.ARiserLeft = ARiserLeft;
+        inputs.ARiserRight = ARiserRight;
+        inputs.Walk = Mode == SimulationMode.Launch ? Walk() : Vector3.Zero;
         int steps = 0;
         while (_pending >= StepTime && steps < 4)
         {
@@ -434,7 +542,7 @@ public sealed partial class ParagliderPreview : ObservableObject, IDisposable
             inputs.CollapseRight = Active("CollapseRight", t);
             inputs.Frontal = Active("Frontal", t);
             inputs.BigEars = Active("BigEars", t);
-            inputs.Wind = Active("Gust", t) > 0 ? new Vector3(0, 4, 0) : Vector3.Zero;
+            inputs.Wind = BaseWind(t) + (Active("Gust", t) > 0 ? new Vector3(0, 4, 0) : Vector3.Zero);
             (_previousDisplay, _currentDisplay) = (_currentDisplay, _previousDisplay);
             _recorder?.BeforeStep();
             sim.Step(StepTime);
@@ -451,6 +559,7 @@ public sealed partial class ParagliderPreview : ObservableObject, IDisposable
         for (int i = 0; i < _shown.Length; i++) _shown[i] = Vector3.Lerp(_previousDisplay[i], _currentDisplay[i], alpha);
 
         _scene.Pose(_shown);
+        if (Mode == SimulationMode.Launch) PosePilot(sim);
         if (ShowForces) UpdateForces();
 
         var v = sim.PilotVelocity;
@@ -458,7 +567,14 @@ public sealed partial class ParagliderPreview : ObservableObject, IDisposable
         var pressure = sim.CellPressure;
         int deflated = 0;
         foreach (float p in pressure) if (p < 0.4f) deflated++;
-        Telemetry = $"{sim.Time,5:0.0} s   airspeed {sim.Airspeed * 3.6f:0} km/h   vario {v.Y:+0.0;-0.0} m/s   glide {(v.Y < -0.05f ? horizontal / -v.Y : 99):0.0}   " +
+        string launch = "";
+        if (sim.Ground is { } ground)
+        {
+            float height = (float)(sim.Origin.Y + sim.PilotPosition.Y - ground) - sim.StandingHeight;
+            launch = $"   wind {-BaseWind(sim.Time).Z * 3.6f:0} km/h   wing {sim.CanopyElevation:0}° {(sim.CanopyBehindPilot ? "behind" : "ahead")}   " +
+                     $"triggers: {(TriggersPullARisers ? "A risers" : "brakes")}   {(sim.PilotOnGround ? "standing" : $"{height:0.0} m up")}   ground speed {horizontal * 3.6f:0} km/h";
+        }
+        Telemetry = $"{sim.Time,5:0.0} s{launch}   airspeed {sim.Airspeed * 3.6f:0} km/h   vario {v.Y:+0.0;-0.0} m/s   glide {(v.Y < -0.05f ? horizontal / -v.Y : 99):0.0}   " +
                     $"G {sim.LoadFactor:0.0}   AoA {sim.CenterAngleOfAttack:0}°   deflated cells {deflated}/{pressure.Length}{(IsRecording && _recorder is { } recorder ? $"   ● REC {recorder.RecordedSeconds:0.0} s" : "")}" +
                     (_gamepad.GamepadName is { } padName ? $"   gamepad: {padName}" : "");
 
@@ -470,15 +586,20 @@ public sealed partial class ParagliderPreview : ObservableObject, IDisposable
     /// <summary>
     /// Reads the game controller (see <see cref="GamepadPilot"/>): triggers and left stick set the brakes, speed bar and
     /// weight shift; A starts or pauses the simulation; the left and right bumpers collapse the left and right side.
-    /// The simulation calls it every frame; the view calls it regularly while the simulation doesn't run.
+    /// Launching, the triggers pull the A risers while <see cref="TriggersPullARisers"/>, and the stick walks while the
+    /// pilot stands. The simulation calls it every frame; the view calls it regularly while the simulation doesn't run.
     /// </summary>
     public void PollGamepad()
     {
         var pad = _gamepad.Read(Gamepads.First);
         if (pad.BrakeLeft is { } brakeLeft) BrakeLeft = brakeLeft;
         if (pad.BrakeRight is { } brakeRight) BrakeRight = brakeRight;
-        if (pad.SpeedBar is { } speedBar) SpeedBar = speedBar;
-        if (pad.WeightShift is { } weightShift) WeightShift = weightShift;
+        if (pad.ARiserLeft is { } aRiserLeft) ARiserLeft = aRiserLeft;
+        if (pad.ARiserRight is { } aRiserRight) ARiserRight = aRiserRight;
+        bool walking = Mode == SimulationMode.Launch && _simulator is { PilotOnGround: true };
+        _stick = walking ? pad.Stick : Vector2.Zero;
+        if (!walking && pad.SpeedBar is { } speedBar) SpeedBar = speedBar;
+        if (!walking && pad.WeightShift is { } weightShift) WeightShift = weightShift;
         if ((pad.Pressed & GamepadButtons.A) != 0) ToggleSimulation();
         if ((pad.Pressed & GamepadButtons.LeftBumper) != 0) CollapseLeft();
         if ((pad.Pressed & GamepadButtons.RightBumper) != 0) CollapseRight();

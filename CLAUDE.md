@@ -127,8 +127,41 @@ simulation algorithm for game developers; keep it in sync with the simulator.
   the flight direction; `SimulatorSettings.EnergyDiagnostics` (energy per substep stage) is how that was found.
   Tests in `SimulationTests` pin the flight envelope and the shapes (trim, brakes and handles, slack brake lines, speed
   bar, collapse, big ears, frontal span fold, full stall and recovery); rerun them after any physics change.
+  **Self-collision** (`SelfCollisionDistance` 0.4 m, `SelfCollisionExclusion` 1 m; Müller's Ten Minute Physics 15
+  particle method): canopy nodes keep 0.4 m apart unless they are within 1 m at rest. Measured with a census of the
+  proxy's surface triangles passing through each other (`SelfCollisionTests`): full stall 78 → 2.5 crossing pairs per
+  frame on Medium (275 → 30 on High), spin 23 → 5 (252 → 36), collapses, frontals and big ears had none; +10% time on
+  Medium, +20–30% on High. Lessons, don't retry blindly: Müller's `min(thickness, rest distance)` rule would stop cells
+  from emptying (a cell's skins are 0.1–0.3 m apart at rest), hence the exclusion; 0.2 m lets nodes slip through the
+  sparse proxy; a candidate margin from the fastest node made every pair a candidate on High (a few jittery light
+  nodes), capping it at the distance let spins through, the 98th percentile works. Still there: skins crossing within
+  a cell or its neighbor (about 200 pairs per frame in a stall, a few in big ears, the laid-out launch wing starts with
+  ~380 in its bunched horseshoe); particles can't see them (excluded), and node–triangle contact (3 cm, the side at the
+  substep start, crossings tested at the crossing time, rest-coplanar pairs excluded) removed them in collapses and big
+  ears but not in stalls and spins and made frontals worse: on the coarse proxy most such crossings are edges through
+  edges, and its pushes made new ones. It would need edge–edge contact too (and a clean launch layout). On the High
+  proxy, the launch blew up (NaN after 4.6 s) without self-collision.
   `PolarRecorder` shows the polar effect. For visual checks of shapes, a headless renderer of the proxy (orthographic
   wire or shaded views over time) is far quicker than the app.
+- **Launch** (`GliderSimulator.Ground`, `ResetOnGround`, `Reset(SimulationStart)`): flat ground with position-level
+  Coulomb friction for every node (after `SeparateSurfaces`), the pilot standing at `StandingHeight` (one-sided), walking
+  at `Inputs.Walk` with as much grip as the weight on the feet gives, the harness held upright by the heading (fading as
+  the wing lifts the pilot), the heading turning toward the wing (`TurnRate`), the `ARiserLeft`/`ARiserRight` proxy
+  controls (0.2 m), and empty fabric limper below `LimpAirspeed` (only with a ground). `ResetOnGround` lays the wing out
+  (swung back about the carabiners, outer part pulled in, sections laid down toward the pilot) and settles it 2 s with
+  damping 30/s. `LaunchTests` pin the layout, the wind filling the wing, the A pull, walking and turning.
+  Measured lessons, don't undo: the deflated compliance (0.05) holds an empty cell's shape against its own weight, so
+  without the limpness a laid-out wing stands up where its fabric is bunched (the horseshoe's tips) and pushes itself
+  out until the lines stop it; limp only near the ground (not the whole canopy on the ground) made the rising wall half
+  stiff and yaw; limper than 10× let the falling lines drag the trailing edges over the leading edges; sections laid
+  square to the arc (instead of toward the pilot) or at the full arc's radius leave the outer lines too short once
+  lowered (the lines lift the leading edges a meter); knots start at the risers' height and fall, which yanks the
+  canopy into a heap without the settle damping. A 0.35 m A pull dropped the angle of attack about 19° and the wing
+  shot up and overshot; at 0.2 m it comes up from a wall in about a second. The rise is still livelier than a real
+  wing's (the canopy's apparent mass is missing, see above), the wing needs active flying to stay overhead (it yaws off
+  to a side; a pilot turning fast with it, 90°/s, fed the yaw), and at 5–6 m/s the rising wing lifts and drags a pilot
+  who doesn't step toward it. A scripted kiting pilot in the harness is hard to tune; flying it with a gamepad in the
+  app is the real check.
 - **Export** (`GliderExporter`, `GltfWriter`): .glb (skinned, PBR, embedded PNGs, optional proxy cage and baked
   animation), proxy JSON, OBJ/MTL/PNG, line plan CSV. Validate .glb changes with the Khronos glTF validator and a
   Blender import (Blender 4.4 is installed: `blender -b --python script.py`).
@@ -140,12 +173,15 @@ simulation algorithm for game developers; keep it in sync with the simulator.
   `PolarRecorderOptions` is the editable form of the settings (step counts, times) shown by
   `ParagliderActions.AskPolarSettingsAsync` through `IShellDialogs.EditPropertiesAsync` (a property grid in a dialog).
 - **Recorded flights** (`Simulation/FlightRecording`): `FlightRecorder` logs a simulated flight (call `BeforeStep`/
-  `AfterStep` around every `GliderSimulator.Step`): the inputs of every step from the start (as changes), and while
+  `AfterStep` around every `GliderSimulator.Step`): the `Start` (flight or ground, with the `GroundHeight` in the frames'
+  coordinates), the inputs of every step from the start (as changes), and while
   recording frames every second step (the proxy's node positions relative to where the recording started, 1 mm int16
   offsets from the pilot, each the difference to the frame before, deflated, base64; plus `FlightTelemetry`).
   `FlightRecording` keeps the design, the inputs and the frames; `Decode()` gives the frames. To examine a shared one:
-  load the project file, take the `RecordingNode`'s recording, generate its design's proxy, and fly a new simulator with
-  `InputsAt(step)` for every step: it reproduces the frames (deterministic; `FlightRecordingTests`).
+  load the project file, take the `RecordingNode`'s recording, generate its design's proxy, `Reset(recording.Start)` a
+  new simulator and fly it with `InputsAt(step)` for every step: it reproduces the frames (deterministic;
+  `FlightRecordingTests`). `FrameVersion` 0 (older recordings) has 11 inputs in the frame telemetry, 1 adds the A risers
+  and the walk.
 - **Module**: `ParagliderNode` (a `ContainerNode` holding its `PolarNode`s and `RecordingNode`s; the parameters as [Inspectable] properties forwarding to a `GliderDesign`; colors saved as
   hex; `Snapshot()` for the generator thread; `MeshDetail` writes its settings into the explicit mesh properties, and
   editing one of those switches to Custom; `MeshDetail` is saved after them, `[JsonPropertyOrder(1)]`, so loading
@@ -153,8 +189,13 @@ simulation algorithm for game developers; keep it in sync with the simulator.
   triangle counts measured in the background; `ParagliderModule.AskNewParagliderAsync`), `ParagliderPreview` (debounced background generation, Scene3D, simulation
   loop driven by `Viewport3D.Rendered`; the Forces view draws `GliderSimulator.RecordForces`' per-node and per-strip
   lift and drag as one vertex-colored line mesh; Record adds a `RecordingNode` when stopped, without selecting it),
-  `GliderScene` (the model's parts and materials skinned to the proxy, the proxy meshes, the part toggles; shared by the
-  preview and the replay), `RecordingPlayer`/`RecordingDetailView` (the replay: generates the recorded design, plays the
+  `ParagliderPreview.Mode` (`SimulationMode` Flight or Launch, L): launching, the wind ramps to `MaxWind` at
+  `WindRampRate`, the gamepad's triggers pull the A risers while the wing is low behind the standing pilot (until
+  `LaunchedElevation`, back 10° below it; `GamepadPilot.TriggersPullARisers`: after a switch a held trigger acts again
+  only once let go) and the left stick walks relative to `CameraYaw` while standing; the camera frames the layout from
+  behind the wing and the grid is the ground,
+  `GliderScene` (the model's parts and materials skinned to the proxy, the proxy meshes, the part toggles, the standing
+  pilot figure for launches; shared by the preview and the replay), `RecordingPlayer`/`RecordingDetailView` (the replay: generates the recorded design, plays the
   decoded frames with play/pause, timeline, frame steps, speed; the animation export), `ParagliderDetailView`,
   `ParagliderActions` (global export commands; `AddPolar`, `AddRecording`, `ExportRecordingAsync`),
   `CurveEditor`/`CurvePropertyEditor`, `PolarDetailView` and `PolarChart` (plots a polar on Atelier.Charts' `XYChart`; also used live while recording). The 3D view is Atelier's `Atelier.Graphics3D.Viewport3D` (OpenGL on the window's

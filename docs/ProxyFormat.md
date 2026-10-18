@@ -18,7 +18,7 @@ The reference simulator is `ParagliderToolbox.Paraglider.Simulation.GliderSimula
 
 ```jsonc
 {
-  "format": "ParagliderToolbox.Proxy", "formatVersion": 2,
+  "format": "ParagliderToolbox.Proxy", "formatVersion": 3,
   "coordinates": "glTF: meters, +Y up, +Z forward (flight direction), +X pilot's left",
   "complexity": "Medium",
   "nodes":       [ { "id": 0, "name": "S00_LE", "kind": "camber", "position": [x,y,z], "mass": 0.004, "section": 0, "chord": 0, "side": -1 }, ... ],
@@ -85,6 +85,8 @@ never below 5% of the rest length:
   last not at all) and lengthens the maillon links between them accordingly.
 - `CollapseLeft`, `CollapseRight`: the A lines holding the outer half of the half span, each by the share of the
   canopy it holds there; `BigEarsLeft`, `BigEarsRight`: the same for the outer quarter; `Frontal`: all A lines.
+- `ARiserLeft`, `ARiserRight` (format 3): a side's A riser by 0.2 m and its A–B maillon link lengthened to match, the
+  pilot's hand pulling the A riser to lift the leading edge off the ground in a launch.
 - **`strips`**: the cells whose inlets the control closes, by its input. A pulled A line folds the leading edge under,
   which strip aerodynamics can't resolve; the cells it holds empty while it is pulled.
 
@@ -120,13 +122,57 @@ calibrated polar).
    frame). If `g = (U − L)·n̂` is below 15% of its rest value, move `U` and `L` apart along `n̂` by the difference,
    weighted by `1/m`. Without this, limp empty cells let one skin pass through the other, and the pressure on the
    inverted pocket holds it there.
-5. **Velocities**: `v = (x − x_prev)/h`; damp only the motion relative to the center of mass.
-6. **Keep the glider at the origin**: after every step, shift all positions by whole meters (exact in floats) so the
+5. **Self-collision**: the canopy nodes are particles that keep 0.4 m from each other (Müller, *Ten Minute Physics* 15),
+   so parts of the canopy that fold onto each other in a stall or a spin don't pass through each other. Pairs closer
+   than 1 m at rest never collide: they are one piece of fabric (a cell's two skins, neighboring stations and cells),
+   which has to fold, crumple and empty freely. The distance has to be about the proxy's node spacing, or a node slips
+   between two others (0.2 m let them through on the Medium proxy). Once per frame, hash the canopy nodes in cells of
+   the reach `0.4 m + 2·v·Δt` (`v` the 98th percentile of the nodes' speeds relative to the canopy's mean) and keep
+   the pairs within the reach; every substep, push each pair closer than 0.4 m apart to 0.4 m (weighted by `1/m`),
+   then move both nodes' motion in the substep toward the pair's mass-weighted mean by `min(1, 20/s · h)` (friction
+   that can't overshoot).
+6. **Ground** (only with a ground, see *On the ground* below): nodes below it go back onto it, with friction; the
+   pilot stands, walks and holds the harness upright.
+7. **Velocities**: `v = (x − x_prev)/h`; damp only the motion relative to the center of mass.
+8. **Keep the glider at the origin**: after every step, shift all positions by whole meters (exact in floats) so the
    middle of the system (between the pilot and the canopy) stays within a meter of the origin, and accumulate the
    offset in double precision. Float precision matters even a few meters out: allowing 16 m, rounding in the stiff
    constraints biased the sink rate by ±10%, wandering over tens of seconds and depending on the flight direction.
 
-Start each flight with every node moving at `trimAirspeed` along a path `trimFlightPathAngle` below the horizon.
+Start each flight with every node moving at `trimAirspeed` along a path `trimFlightPathAngle` below the horizon, or
+laid out on the ground (below).
+
+### On the ground (launching)
+
+The reference simulator takes a flat ground (`GliderSimulator.Ground`, a world height) and these pilot inputs: the A
+risers (the controls above) and `Walk`, the horizontal velocity the pilot wants to walk or run with.
+
+- **Contact**: after the skins are kept apart, every node but the pilot below `ground + 0.02 m` goes back up onto it by
+  the depth `d`, and its horizontal motion in this substep (`x − x_prev`) is held back by at most `μ·d` (Coulomb friction
+  at the position level: the depth is how hard the node pressed down in the substep), `μ = 0.6` (fabric on grass).
+- **The pilot stands** on their legs: the pilot node is held at standing height (the carabiners 1.2 m above the ground)
+  when it would sink below it, one-sided, so the wing can lift them off. Their feet move them toward `walk · h` in the
+  substep by at most `μ_feet·d` with `μ_feet = 1`: the grip follows the weight on the feet, so a wing pulling up and back
+  lightens the pilot and drags them. The walking velocity follows the input at up to 3 m/s² (5 m/s at most); in the air
+  it is the pilot's own ground speed, so they land running.
+- **Upright harness**: standing, the carabiners are held at their rest offsets from the pilot, turned by the pilot's
+  heading (a position correction between each carabiner and the pilot, weighted by inverse mass, so the momentum
+  stays), fully while standing and fading out as the pilot is lifted 0.4 m. In the air the harness hangs freely.
+- **Heading**: per step the pilot turns at up to 30°/s toward the way the wing faces: away from the middle of the canopy
+  while it is low (a crumpled wing on the ground has no direction of its own), square to its span (between the quarter
+  span sections) as it rises from 30° to 60° above the pilot's horizon.
+- **Limp fabric in light wind**: on the ground, a strip's deflated compliance grows by `(4 m/s / V)²` (at most 10 times)
+  at airspeeds `V` below 4 m/s: the deflated compliance only has to be soft against air loads, and an empty wing must
+  fold under its own weight to lie flat. It takes its shape as the wind fills it.
+
+**Laying out** (`ResetOnGround`): the glider swings back by 90° about the carabiners' axis, so the canopy stands behind
+the pilot like a wall, the pilot and the toggles in their hands staying put; the outer part comes in toward the pilot
+by up to 15% at the tips (`1 − 0.15·s³` of the horizontal distance, `s` the lateral distance relative to the half span),
+or the lowered tips would lie farther away than their lines reach. Each section is then laid down with its trailing edge
+where it stands, its chord pointing straight at the pilot (blending to square to the arc over the outer 12% of the span,
+where neighbors would overlap) and its profile unchanged, upper surface up: the lines only get slacker. Nothing is
+left below the ground, the cells are empty, and the glider settles for two seconds with heavy damping (30/s) so the
+knots come down onto the ground without yanking the canopy, then the velocities and the time start from zero.
 
 ### Strip aerodynamics
 

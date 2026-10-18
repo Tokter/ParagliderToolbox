@@ -14,15 +14,18 @@ namespace ParagliderToolbox.Modules.Paraglider.Views;
 
 /// <summary>
 /// The detail view of a paraglider: the 3D preview of the generated model (canopy, ribs, rigging and the physics proxy),
-/// and the flight simulation of the proxy with the pilot's controls.
+/// and the simulation of the proxy with the pilot's controls, in flight or launching from the ground.
 /// </summary>
 /// <remarks>
 /// The view is a <see cref="KeybindingHandler"/> for the <see cref="ParagliderPreview.Group"/> commands (1–4 toggle the
-/// parts, 5 the forces, P simulates, Q/E/F collapse, B big ears, G a gust, R resets, Ctrl+R records, Ctrl+P records the polar). The viewport has its own
-/// navigation: middle drag orbits, Shift+middle drag pans, the wheel zooms, Home frames the model, Shift+Z wireframe.
+/// parts, 5 the forces, P simulates, L switches between flight and launch, Q/E/F collapse, B big ears, G a gust, R resets,
+/// Ctrl+R records, Ctrl+P records the polar). The viewport has its own navigation: middle drag orbits, Shift+middle drag
+/// pans, the wheel zooms, Home frames the model, Shift+Z wireframe.
 /// </remarks>
 public sealed class ParagliderDetailView : KeybindingHandler
 {
+    private static readonly string[] s_modes = ["Flight", "Launch"];
+
     private readonly ParagliderPreview _preview;
     private readonly Viewport3D _viewport;
     private Vector3? _followTarget;
@@ -39,10 +42,12 @@ public sealed class ParagliderDetailView : KeybindingHandler
         _viewport = new Viewport3D().Scene(preview.Scene).ShowGrid(true);
         _viewport.Rendered += (_, _) =>
         {
+            _preview.CameraYaw = _viewport.Camera.Yaw;
             if (_preview.Advance()) _viewport.RequestRender();
         };
         _preview.ModelApplied += (_, _) => Frame();
         _preview.SimulationStopped += (_, _) => Dispatcher.Post(Frame);
+        _preview.SimulationStarted += (_, _) => Dispatcher.Post(Frame);
         _gamepadTimer = new DispatcherTimer(TimeSpan.FromSeconds(1 / 30.0), (_, _) =>
         {
             if (!_preview.IsSimulating) _preview.PollGamepad();
@@ -75,6 +80,10 @@ public sealed class ParagliderDetailView : KeybindingHandler
         static Button Action(System.Windows.Input.ICommand command) =>
             new Button().Variant(ButtonVariant.Text).Command(command).Height(30).MinHeight(0).Padding(8, 0);
 
+        var mode = new ComboBox { ItemsSource = s_modes, Height = 30, CornerRadius = new CornerRadius(4), Padding = new Thickness(8, 2), Width = 110 }
+            .ToolTip("What to simulate (L): the glider flying, or a launch: the wing laid out on the ground behind the pilot, the wind picking up")
+            .BindSelectedIndex(_preview, p => (int)p.Mode, (p, v) => p.Mode = (SimulationMode)Math.Max(0, v));
+
         var simulate = new Button()
             .Variant(ButtonVariant.Tonal)
             .Command(_preview.ToggleSimulationCommand)
@@ -93,6 +102,7 @@ public sealed class ParagliderDetailView : KeybindingHandler
             new Button().Variant(ButtonVariant.Text).Height(30).MinHeight(0).Padding(8, 0)
                 .Content(new Icon().Kind(MaterialIconKind.CenterFocusStrong).Size(18)).ToolTip("Frame the glider (Home)").OnClick(Frame),
             new Border().Width(12),
+            mode,
             simulate,
             Action(_preview.ResetSimulationCommand),
             new ToggleButton()
@@ -144,7 +154,15 @@ public sealed class ParagliderDetailView : KeybindingHandler
         static Button Pulse(System.Windows.Input.ICommand command) =>
             new Button().Variant(ButtonVariant.Outlined).Command(command).Height(30).MinHeight(0).Padding(10, 0);
 
+        var wind = new StackPanel().Width(150).Spacing(0).BindIsVisible(_preview, p => p.Mode == SimulationMode.Launch).Children(
+            new TextBlock().LabelSmall().Muted().BindText(_preview, p => $"Wind {p.MaxWind * 3.6f:0} km/h"),
+            new Atelier.Controls.Slider().Minimum(0).Maximum(8).ToolTip("The wind the launch picks up to (from ahead of the pilot)")
+                .BindValue(_preview, p => p.MaxWind, (p, v) => p.MaxWind = v));
+
         var controls = new WrapPanel().Spacing(16, 8).Children(
+            wind,
+            Slider("Left A riser", 0, _preview, p => p.ARiserLeft, (p, v) => p.ARiserLeft = v).BindIsVisible(_preview, p => p.Mode == SimulationMode.Launch),
+            Slider("Right A riser", 0, _preview, p => p.ARiserRight, (p, v) => p.ARiserRight = v).BindIsVisible(_preview, p => p.Mode == SimulationMode.Launch),
             Slider("Left brake", 0, _preview, p => p.BrakeLeft, (p, v) => p.BrakeLeft = v),
             Slider("Right brake", 0, _preview, p => p.BrakeRight, (p, v) => p.BrakeRight = v),
             Slider("Speed bar", 0, _preview, p => p.SpeedBar, (p, v) => p.SpeedBar = v),
@@ -202,11 +220,22 @@ public sealed class ParagliderDetailView : KeybindingHandler
     {
         if (_preview.Scene.GetBounds() is not { } bounds) return;
         _viewport.Camera.Frame(bounds.Min, bounds.Max);
-        // A three-quarter view from the front and above, like the glider is seen from a hillside.
-        _viewport.Camera.Yaw = 0.65f;
-        _viewport.Camera.Pitch = 0.32f;
+        if (_preview.GroundHeight is { } ground)
+        {
+            // Launching: from behind the wing laid out on the ground, over it to the pilot and the way they launch, so the
+            // stick walks the way it points.
+            _viewport.Camera.Yaw = MathF.PI - 0.5f;
+            _viewport.Camera.Pitch = 0.35f;
+            _viewport.GridHeight = ground;
+        }
+        else
+        {
+            // A three-quarter view from the front and above, like the glider is seen from a hillside.
+            _viewport.Camera.Yaw = 0.65f;
+            _viewport.Camera.Pitch = 0.32f;
+            _viewport.GridHeight = 0;
+        }
         _followTarget = null;
-        _viewport.GridHeight = 0;
         _viewport.RequestRender();
     }
 
@@ -214,8 +243,9 @@ public sealed class ParagliderDetailView : KeybindingHandler
     private void Follow(Vector3 target)
     {
         if (_followTarget is { } last) _viewport.Camera.Target += target - last;
-        // The grid stays below the glider (its lines fixed in the world, so they flow past and show the motion).
-        _viewport.GridHeight = target.Y - 10;
+        // The grid is the ground when launching; flying, it stays below the glider (its lines fixed in the world, so they
+        // flow past and show the motion).
+        _viewport.GridHeight = _preview.GroundHeight ?? target.Y - 10;
         _followTarget = target;
     }
 

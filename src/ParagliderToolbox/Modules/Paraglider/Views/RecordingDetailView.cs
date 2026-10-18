@@ -126,7 +126,7 @@ public sealed class RecordingDetailView : KeybindingHandler
         _viewport.Camera.Yaw = 0.65f;
         _viewport.Camera.Pitch = 0.32f;
         _followTarget = null;
-        _viewport.GridHeight = bounds.Min.Y - 2;
+        _viewport.GridHeight = _player.GroundHeight ?? bounds.Min.Y - 2;
         _viewport.RequestRender();
     }
 
@@ -134,7 +134,7 @@ public sealed class RecordingDetailView : KeybindingHandler
     private void Follow(Vector3 target)
     {
         if (_followTarget is { } last) _viewport.Camera.Target += target - last;
-        _viewport.GridHeight = target.Y - 10;
+        _viewport.GridHeight = _player.GroundHeight ?? target.Y - 10;
         _followTarget = target;
         _viewport.RequestRender();
     }
