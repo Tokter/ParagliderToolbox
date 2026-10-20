@@ -6,7 +6,7 @@ namespace ParagliderToolbox.Terrain.Export;
 
 /// <summary>
 /// Writes heightmaps for game engines' terrain systems: 16-bit grayscale PNG (Unreal, Godot) and 16-bit little-endian
-/// RAW (Unity), the heights mapped linearly from a range to 0–65535.
+/// RAW (Unity), the heights mapped linearly from a range to 0–65535; and 8-bit grayscale PNG for class maps.
 /// </summary>
 public static class Heightmaps
 {
@@ -31,10 +31,21 @@ public static class Heightmaps
     public static byte[] ToPng(ReadOnlySpan<ushort> values, int width, int height)
     {
         if (values.Length != width * height) throw new ArgumentException("There must be width × height values.", nameof(values));
-        int rowBytes = width * 2;
-        var raw = new byte[rowBytes * height];
+        var raw = new byte[width * 2 * height];
         for (int i = 0; i < values.Length; i++) BinaryPrimitives.WriteUInt16BigEndian(raw.AsSpan(i * 2), values[i]);
+        return GrayPng(raw, width, height, 16);
+    }
 
+    /// <summary>Writes 8-bit values as a grayscale PNG (a class map, a mask).</summary>
+    public static byte[] ToPng(ReadOnlySpan<byte> values, int width, int height)
+    {
+        if (values.Length != width * height) throw new ArgumentException("There must be width × height values.", nameof(values));
+        return GrayPng(values.ToArray(), width, height, 8);
+    }
+
+    private static byte[] GrayPng(byte[] raw, int width, int height, int bitDepth)
+    {
+        int bytes = bitDepth / 8, rowBytes = width * bytes;
         using var compressed = new MemoryStream();
         using (var zlib = new ZLibStream(compressed, CompressionLevel.Optimal, leaveOpen: true))
         {
@@ -48,7 +59,7 @@ public static class Heightmaps
                 long bestScore = long.MaxValue;
                 for (int filter = 0; filter <= 4; filter++)
                 {
-                    Filter(filter, current, above, filtered, 2);
+                    Filter(filter, current, above, filtered, bytes);
                     long score = 0;
                     foreach (byte b in filtered) score += (sbyte)b < 0 ? -(sbyte)b : b;
                     if (score >= bestScore) continue;
@@ -66,7 +77,7 @@ public static class Heightmaps
         var header = new byte[13];
         BinaryPrimitives.WriteInt32BigEndian(header, width);
         BinaryPrimitives.WriteInt32BigEndian(header.AsSpan(4), height);
-        header[8] = 16; // bit depth
+        header[8] = (byte)bitDepth;
         header[9] = 0; // grayscale
         WriteChunk(png, "IHDR", header);
         WriteChunk(png, "IDAT", compressed.ToArray());

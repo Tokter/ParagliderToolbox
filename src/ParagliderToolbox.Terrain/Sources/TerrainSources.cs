@@ -28,11 +28,21 @@ public sealed class TerrainSources
     /// <summary>Gets the imagery sources.</summary>
     public List<IImagerySource> Imagery { get; } = [];
 
+    /// <summary>
+    /// Gets the surface model sources: heights of the top of everything (trees, buildings), never used to build a
+    /// terrain; less the terrain's heights they give the heights of trees and buildings.
+    /// </summary>
+    public List<IElevationSource> Surface { get; } = [];
+
+    /// <summary>Gets the map sources (OpenStreetMap): roads and paths as ways, for the Feature Detector.</summary>
+    public List<IMapSource> Maps { get; } = [];
+
     /// <summary>Gets the cache the built-in sources download through, or <c>null</c>.</summary>
     public DataCache? Cache { get; init; }
 
     /// <summary>
-    /// Creates the built-in sources: swissALTI3D, swissALTIRegio and SWISSIMAGE (swisstopo, Switzerland and around it),
+    /// Creates the built-in sources: swissALTI3D, swissALTIRegio, SWISSIMAGE and the swissSURFACE3D surface model
+    /// (swisstopo, Switzerland and around it), OpenStreetMap's ways (worldwide),
     /// the USGS 3DEP one-meter lidar and 1/3 arc-second models and USDA NAIP (the United States), the Copernicus DEM
     /// GLO-30 and EOX's Sentinel-2 cloudless 2016 (worldwide), downloading through <paramref name="cache"/>.
     /// </summary>
@@ -50,18 +60,25 @@ public sealed class TerrainSources
         sources.Imagery.Add(new SwissImageSource(files, swiss));
         sources.Imagery.Add(new NaipSource(files, new NaipCatalog(cache)));
         sources.Imagery.Add(new Sentinel2CloudlessSource(cache));
+        sources.Surface.Add(new SwissSurface3DSource(files, swiss));
+        sources.Maps.Add(new OpenStreetMapSource(cache));
         return sources;
     }
 
     /// <summary>Gets the source with <paramref name="id"/>, or <c>null</c>.</summary>
     public ITerrainSource? Find(string? id) =>
-        id is null ? null : (ITerrainSource?)Elevation.FirstOrDefault(s => s.Id == id) ?? Imagery.FirstOrDefault(s => s.Id == id);
+        id is null ? null
+        : (ITerrainSource?)Elevation.FirstOrDefault(s => s.Id == id) ?? (ITerrainSource?)Imagery.FirstOrDefault(s => s.Id == id)
+        ?? (ITerrainSource?)Surface.FirstOrDefault(s => s.Id == id) ?? Maps.FirstOrDefault(s => s.Id == id);
 
     /// <summary>Gets the elevation sources to ask for samples <paramref name="spacing"/> meters apart in <paramref name="bounds"/>, in order.</summary>
     public IReadOnlyList<IElevationSource> ElevationFor(GeoBounds bounds, string? preferred, double spacing) => Order(Elevation, bounds, preferred, spacing);
 
     /// <summary>Gets the imagery sources to ask for texels <paramref name="spacing"/> meters apart in <paramref name="bounds"/>, in order.</summary>
     public IReadOnlyList<IImagerySource> ImageryFor(GeoBounds bounds, string? preferred, double spacing) => Order(Imagery, bounds, preferred, spacing);
+
+    /// <summary>Gets the surface model sources to ask for samples <paramref name="spacing"/> meters apart in <paramref name="bounds"/>, in order.</summary>
+    public IReadOnlyList<IElevationSource> SurfaceFor(GeoBounds bounds, double spacing) => Order(Surface, bounds, null, spacing);
 
     private static List<T> Order<T>(List<T> sources, GeoBounds bounds, string? preferred, double spacing) where T : ITerrainSource =>
         sources.Where(s => s.Covers(bounds))
