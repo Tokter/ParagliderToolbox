@@ -227,7 +227,8 @@ documents the tile set export for game developers; keep it in sync with the layo
   `TerrainSources` orders them per area and spacing: preferred first, `SourceScope` Regional before Global, then the
   coarsest `Resolution` still fine enough for the spacing, then the finer ones (where it has no data), then coarser.
   So coarse levels read swissALTIRegio, not part of every swissALTI3D file (a Simulator root tile read 4257 ranges,
-  350 MB). `SwissAlti3DSource`/`SwissImageSource` (`SwissTopoCatalog`: the STAC API v1 in 8 km cells, the newest
+  350 MB). `TerrainSources.Surface` holds surface models (`SwissSurface3DSource`), which only the Feature Detector reads.
+  `SwissAlti3DSource`/`SwissImageSource` (`SwissTopoCatalog`: the STAC API v1 in 8 km cells, the newest
   version per 1 km tile; the asset by gsd, then the overview by spacing; the 2 m files have only 2 and 4 m images),
   `SwissAltiRegioSource` (one BigTIFF COG, 10 m with overviews, Switzerland and ≥ 100 km around it, LV95; credits
   the neighbors' data), `CopernicusDemSource` (AWS bucket, 1° COGs; missing
@@ -406,6 +407,94 @@ solver on a graphics card, ILGPU) and `src/ParagliderToolbox/Modules/Airflow` (r
   terrain at a cliff's foot, and the wind below them is still; slices are drawn at least `SliceClearance` up),
   `AirflowColors` (the scales and legends), `AirflowActions`
   (export).
+
+## Feature Detector
+
+Features of a terrain for a game to place models by: trees and bushes, roads and paths (a network), buildings,
+boulders, areas, lines (waterways, power lines, aerialways, railways, barriers, cliffs), landmarks, a ground cover map;
+from the images, the surface model and OpenStreetMap. Two parts: `src/ParagliderToolbox.Terrain/Features` (UI-free) and
+`src/ParagliderToolbox/Modules/Features`. `docs/FeaturesFormat.md` documents the export for game developers; keep it in
+sync with `FeatureFiles` and the detector.
+
+- **Data**: the terrain's sources at the chosen pixel size (0.25/0.5/1 m): imagery, terrain model, and the surface
+  models of `TerrainSources.Surface` (`SwissSurface3DSource`, swissSURFACE3D Raster 0.5 m; never used to build a
+  terrain). Surface less terrain is the height of what stands on the ground. Blocks with only imagery coarser than 2 m
+  (Sentinel-2) are classified but nothing is looked for in them.
+- **Classes** (`GroundCovers.Classify`, per pixel): color, texture (brightness deviation within ~0.6 m), slope,
+  altitude, object height and its roughness. Tall + green or rough: tree; tall, smooth, not green: building; low green:
+  shrub; white above 1600 m: snow; flat bluish: water; green: grass; gray + rough or steep: rock; gray + smooth: paved
+  (luminance ≤ 0.68) or gravel; beige gravel, brown soil, dark shadow.
+- **`FeatureDetector`**: blocks of `BlockPixels` with a 32 m margin, a few at once, nearest the middle first; a feature
+  belongs to the block its center is in; road pieces are clipped to the block's own part (Liang–Barsky) and joined
+  across blocks (cut ends within 2 m, nearest pairs first; block nodes keep their ids) into chains between junctions
+  (≥ 3 roads) or dead ends; the cover map (majority per cell, shadows filled from neighbors) and the areas
+  (`Outline`: per kind a box-mean share > 0.5, opened for gravel/paved so roads aren't areas, holes filled, small parts
+  dropped, `Polygons.Trace`) are made after all blocks. Buildings come first in a block: trees within 2 m of one are
+  dropped (roof edges are as rough as crowns).
+- **`TreeFinder`**: `Find` on the canopy height model (treetops: maxima within 0.6 m + 7% of the height, crowns a
+  watershed to half the top; peakedness > 0.75 conifer); `FindInImage` without a surface model.
+- **OpenStreetMap** (`FeatureSettings.Map`, default on): `OpenStreetMapSource` (an `IMapSource` in
+  `TerrainSources.Maps`; one Overpass query (`OpenStreetMapSource.Query`: highways, buildings, landuse/natural ways and
+  multipolygons, waterways, parking, power lines, aerialways, railways, barriers, and nodes of trees, rocks, peaks,
+  flying sites, masts …; `out geom`) for the area's bounds rounded out to 0.01°, up to 0.1° per query, cached 30 days;
+  an answer whose remark reports an error is forgotten) → `MapData` (nodes, ways, multipolygon relations) →
+  `MapFeatures.Build` (`MapContent`: roads via `MapRoads.Build`; buildings by their center, outlines of closed ways and
+  multipolygons (`Assemble` joins member ways into rings, holes by containment); areas by `AreaKindOf`, clipped
+  (`Polygons.ClipRing`); lines by `LineKindOf`, clipped, densified to 5 m except wires (towers are the points); tree
+  nodes and tree rows (every 8 m), stones, landmarks by `LandmarkKindOf`; tags kept but source/note/fixme/addr …).
+  The blocks give every map point the ground's height (`Probes`; roads also tally the images' covers for their surface)
+  and measure the map's buildings whose centers they hold (`Polygons.Scan` of the footprint: lowest ground, 95th/15th
+  percentile of what stands there). Then: `Finish` (roads: junctions where ≥ 2 ends meet, bridges/tunnels straight
+  between their ends; buildings: measured else `BuildingHeights` from height/levels/roof:shape/class), detected
+  buildings kept where `Unmapped` (not inside, along or beside mapped ones, not on roads, railways or water), `MapMask` drops image trees on mapped roofs and image boulders on roofs,
+  roads and parking (without a surface model the images take roofs and cars for them), `Merge` adds map trees and
+  stones where none was found near and gives image trees the `leaf_type` of the map forest they stand in, `Burn` paints
+  the map's water, glaciers, buildings and roads into the cover map, `Outline` adds the images' areas only where the
+  map has none of the kind within 5 m (scree and rock count for the images' rock, gravel and paved).
+  `RoadSource` (OpenStreetMap default, Images, Both: traced roads ≥ 70% farther than 5 m from the map's) for roads.
+  Unreachable map: the images, with a note. Measured: overpass-api.de answers in ~30 s whatever the query's size
+  (Interlaken 2 × 2 km, everything: 2879 buildings, 2254 roads, 391 lines, 181 landmarks, 38 s cold), so one query per
+  area; the public mirrors tried (private.coffee, kumi, mail.ru) timed out or refused. OSM is ODbL: the credit and the
+  share-alike note go into the notes, the property's description and the docs.
+- **`RoadFinder`** (roads from the images): road-like pixels at 0.5 m, edge pixels classified rock taken back (their texture sees the meadow),
+  closed, holes < 40 m² filled, thinned (`Skeletons.Thin`), `SkeletonGraph` (nodes at ends and junction clusters,
+  spurs pruned against the half width at their junction), filters, components < 15 m and short asphalt (< 80 m) away
+  from buildings dropped; width = (2 × median distance − 1 px); kind by surface and width (`RoadFeature.KindOf`).
+- **Polygons**: outlines along pixel edges (8-connected parts, right turn at diagonal corners), holes assigned by a probe
+  pixel, `SimplifyRing`, `MinimumRectangle` (rotating calipers); buildings filling > 85% of it are squared to it.
+- **Files** (`FeatureFiles`): `features.json` (Utf8JsonWriter, rounded), `landcover.png` (8-bit gray class numbers,
+  `Heightmaps.ToPng(byte…)`), colors PNG, GeoJSON (WGS84), ATTRIBUTION; `ToBytes`/`FromBytes` (gzip, cover map inside)
+  is what the project keeps (`FeatureSetJsonConverter`).
+- **Module**: `FeaturesNode` (under a `TerrainNode` only; area center as pasted coordinates, empty for the terrain's
+  center, and size, clamped into the terrain; detail; what to look for, roads from; outlook; result summaries;
+  `IsOutdated` by `SettingsVersion`), `FeaturesPreview` (terrain via `TerrainModule.ModelAsync`, detection in the background, overlays
+  built off the UI thread), `FeaturesScene` (area outline, cones/diamonds for trees, road ribbons and junction points,
+  boxes with gable or flat roofs, boulders, area outlines, the cover map as a vertex-colored grid; all on the shown
+  terrain's heights; lines: wires with sag from tower tops, ribbons, standing fences; landmarks as pins),
+  `FeaturesDetailView` (group "Features view": R, T, P, B, K, O, L, I, M), `FeaturesActions` (export to a folder).
+- Measured lessons, don't undo: Swiss summer asphalt is light (village streets 0.63–0.66 luminance, limestone gravel
+  roads 0.70–0.77), so the paved/gravel split is 0.68. Scree breaks into gray "roads": absolute texture doesn't carry
+  over between imageries (NAIP is noisier), the ratio does: a line's texture over that of the bare ground within 10 m
+  is 0.3–0.4 for roads (SWISSIMAGE), 0.45–0.65 (NAIP), 0.7–1.1 in scree. The terrain model's bumpiness and the surface
+  model's roughness don't separate scree from trails (the lidar ground is smooth, and DSM = DTM in open terrain). In
+  the image alone, crowns found as the darkest green sat on their cast shadows: crown pixels are darker than 0.85 × the
+  open grass but brighter than 0.35 × it (shadows are darker and gray); radii are about half the lidar crowns' (× 1.8).
+  Image-only trees match lidar trees within 3 m only a third of the time, but their number is right (3190 vs 3232).
+  Roof edges classify as trees (rough): grow buildings into tall, not green pixels and keep trees 2 m away. Dark red and
+  purple trees (copper beeches) aren't green and pass the roughness test: the roof flatness test
+  (`MaxRoofCurvature`, median |Laplacian| of the top at 0.5 m: roofs 0.03–0.11, those trees 0.25–0.7) drops them;
+  bridges and trains stand above the terrain model like roofs (dropped by the map's roads, railways and water). Of 181
+  buildings found beside Interlaken's 2879 mapped ones, 64 were left, all real structures but a parasol; the check
+  drew contact sheets of the found buildings over the image with the mapped outlines. Faint
+  meadow trails remain undetected (a Hessian ridge filter was dominated by the mowing texture).
+- How to judge changes: a scratch harness that draws the features over the aerial image (`FeatureFiles` export plus
+  SkiaSharp) on a village (Beatenberg 46.6975, 7.7990), an alpine area with scree and gravel roads (First 46.6635,
+  8.0560) and an image-only area (Mount Tamalpais 37.9235, −122.5965); and per road its texture, bare surroundings and
+  ratio. `FeatureTests` pin a synthetic scene (no network): 49 trees, the road network across blocks, the building's
+  rectangle, the boulder, the forest outline, the image-only fallback, the files; with a fake map (`FeatureScene.MapWays`)
+  the map's network (splits, joins, cuts, surfaces from the images, a bridge), Both, an unreachable map, and the map's
+  buildings (measured, from tags), multipolygon forest with a hole, water burned into the cover map, a power line, a
+  culvert, landmarks, map trees, stones, image trees taking the map forest's leaf type (`FeatureScene.Map`).
 
 ## Adding a feature
 

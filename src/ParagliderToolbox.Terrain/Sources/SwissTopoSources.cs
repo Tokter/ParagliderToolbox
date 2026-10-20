@@ -55,6 +55,54 @@ public sealed class SwissAlti3DSource(CogFiles files, SwissTopoCatalog catalog) 
 }
 
 /// <summary>
+/// swissSURFACE3D Raster, swisstopo's surface model of Switzerland and Liechtenstein: the top of everything (trees,
+/// buildings) from airborne lidar, 0.5 m, as 1 km Cloud Optimized GeoTIFFs in LV95. Less swissALTI3D's bare ground,
+/// it gives the heights of trees and buildings.
+/// </summary>
+public sealed class SwissSurface3DSource(CogFiles files, SwissTopoCatalog catalog) : IElevationSource
+{
+    /// <summary>The STAC collection.</summary>
+    public const string Collection = "ch.swisstopo.swisssurface3d-raster";
+
+    private readonly BlockCache<float> _blocks = new();
+
+    /// <inheritdoc/>
+    public string Id => "swisssurface3d";
+
+    /// <inheritdoc/>
+    public string Name => "swissSURFACE3D Raster (swisstopo)";
+
+    /// <inheritdoc/>
+    public string Description => "Lidar surface model of Switzerland and Liechtenstein: the tops of trees and buildings, 0.5 m.";
+
+    /// <inheritdoc/>
+    public string Attribution => "© swisstopo";
+
+    /// <inheritdoc/>
+    public string License => "swisstopo open government data: free, including commercial use; the source must be credited.";
+
+    /// <inheritdoc/>
+    public double Resolution => 0.5;
+
+    /// <inheritdoc/>
+    public SourceScope Scope => SourceScope.Regional;
+
+    /// <inheritdoc/>
+    public bool Covers(GeoBounds bounds) => bounds.Intersects(SwissAlti3DSource.SwissBounds);
+
+    /// <inheritdoc/>
+    public async Task<int> FillAsync(SampleRequest request, float[] heights, CancellationToken cancellationToken)
+    {
+        if (!Covers(request.Bounds)) return 0;
+        var levels = await SwissLevels.FindAsync(files, catalog, Collection, request, i => float.IsNaN(heights[i]),
+            (tiff, image) => new GeoTiffElevationLevel(tiff, image), cancellationToken);
+        if (levels is null) return 0;
+        return await RasterFill.FillHeightsAsync(request, heights, SwissGrid.Instance, new RasterMosaic<float>(levels.Value.Levels),
+            levels.Value.PixelMeters, _blocks, cancellationToken);
+    }
+}
+
+/// <summary>
 /// swissALTIRegio, swisstopo's 10 m terrain model of Switzerland and at least 100 km around it (bare ground, from the
 /// neighbouring countries' national models abroad): one Cloud Optimized GeoTIFF in LV95 with overviews down to
 /// hundreds of meters, so coarse levels of detail read a few of its tiles instead of every 1 km swissALTI3D file.

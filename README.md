@@ -303,6 +303,53 @@ frame, `model.WindAt(x, y, z)` is the base flow with the thermals' lift, `model.
 seeded and deterministic however the frames cut the time ([docs/AirflowFormat.md](docs/AirflowFormat.md#playing-it-in-a-game)).
 Over Interlaken it keeps about 40 thermals and a few cumulus about at once, as the run did.
 
+## Feature Detector
+
+![The feature detector over Beatenberg: conifers and broadleaf trees at their measured heights, the buildings from OpenStreetMap with their measured heights and roofs, roads and paths, signposts and benches on the terrain, the legend under the view and the settings beside it (data © swisstopo, © OpenStreetMap contributors)](docs/images/ui-features.png)
+
+*Beatenberg, 600 × 600 m at 50 cm in about a second from the cache: 2,822 trees and 366 bushes with their measured
+heights, 88 buildings (86 outlines from OpenStreetMap, their heights from the lidar), 1.2 km of roads and paths with 15
+junctions, streams and fences, forest and meadow outlines, signposts and benches. Data: © swisstopo, © OpenStreetMap
+contributors.*
+
+Add features to a terrain (select it, then Ctrl+Shift+F) and Detect (R): the tool looks at a square of the terrain
+(its center and size are properties; the view outlines it) in the aerial images, the terrain and surface models and
+OpenStreetMap, and finds what a game places models by:
+
+- **Trees and bushes**: where each trunk stands, its height and crown radius, conifer or broadleaf. In Switzerland the
+  swissSURFACE3D lidar surface model measures them (trees are the treetops of the canopy height model); elsewhere the
+  crowns are found in the image, their heights estimated and their kind taken from the map's forests. The map's single
+  trees and rows of trees (with their species) are added where none was found.
+- **Roads and paths** from OpenStreetMap as center lines with their width, surface (paved, gravel, dirt), kind (main
+  road, road, track, path), class, name, bridges and tunnels and tags such as the hiking difficulty, joined at their
+  junctions into a network; where the map can't be reached, traced in the images (or both).
+- **Buildings**: the map's outlines everywhere, their heights measured by the surface model where there is one, else
+  from the map's tags (height, floors, roof shape) or their kind; and those the surface model finds that the map lacks.
+- **Lines**: rivers and streams, power lines and aerialways (their towers and pylons, how high: obstacles), railways,
+  fences, walls and hedges, cliffs' edges.
+- **Landmarks**: peaks, paragliding takeoffs and landings, masts and towers, summit crosses, huts, signposts, benches,
+  viewpoints, lift stations.
+- **Boulders**, and **areas** as outlines with holes: forest, rock, scree, cliffs, gravel, asphalt, water and snow, and
+  from the map scrub, grassland, fields, orchards, vineyards, wetland, sand and built-up land.
+- A **ground cover map** (tree, shrub, grass, soil, asphalt, gravel, rock, building, water, snow) at 1 m, with the map's
+  buildings, water and roads painted in.
+
+So a terrain in the United States (NAIP images, no surface model) gets its buildings, roads, lines and landmarks from
+the map and its trees from the images. Every pixel is classified from its color, texture, slope and the height of what
+stands on it; OpenStreetMap comes in one Overpass query per area (cached), the images decide what the map doesn't tell
+(a road's surface, a tree that isn't mapped). The result is saved with the project. OpenStreetMap's data is under the
+ODbL: credit "© OpenStreetMap contributors", and the map data stays under the ODbL when shared. **Export features**
+writes `features.json` in the terrain's frame ([docs/FeaturesFormat.md](docs/FeaturesFormat.md)), the cover map as an
+8-bit PNG (class numbers, a splat map) and in colors, GeoJSON for map tools and the credits.
+
+![The same features from above: trees (red cones, yellow broadleaf, green bushes), buildings from OpenStreetMap (blue, cyan with flat roofs), roads and paths by kind with their junctions, streams, fences, forest and meadow outlines (data © swisstopo, © OpenStreetMap contributors)](docs/images/features-beatenberg.jpg)
+
+| In the detail view | Action |
+|---|---|
+| R | Detect (again to cancel) |
+| T / P / B / K / O / L / I / M | Show the trees / roads and paths / buildings / boulders / areas / ground cover map / lines / landmarks |
+| W, A, S, D (held), E / Q, Shift, right drag | Fly through the landscape, as in the terrain view |
+
 ## Building
 
 Atelier is referenced as source and expected next to this repository:

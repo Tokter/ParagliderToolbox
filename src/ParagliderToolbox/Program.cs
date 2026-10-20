@@ -6,6 +6,7 @@ using ParagliderToolbox.Framework.Settings;
 using ParagliderToolbox.Framework.Views;
 using ParagliderToolbox.Modules.Airflow;
 using ParagliderToolbox.Modules.Core;
+using ParagliderToolbox.Modules.Features;
 using ParagliderToolbox.Modules.Paraglider;
 using ParagliderToolbox.Modules.Terrain;
 
@@ -19,7 +20,7 @@ internal static class Program
         get
         {
             var terrain = new TerrainModule();
-            return [new CoreModule(), new ParagliderModule(), terrain, new AirflowModule(terrain)];
+            return [new CoreModule(), new ParagliderModule(), terrain, new AirflowModule(terrain), new FeaturesModule(terrain)];
         }
     }
 

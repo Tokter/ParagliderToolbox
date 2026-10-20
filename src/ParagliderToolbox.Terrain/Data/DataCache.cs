@@ -108,6 +108,14 @@ public sealed class DataCache
         }
     }
 
+    /// <summary>Forgets the cached copy of the whole resource <paramref name="url"/> (one found to be incomplete).</summary>
+    public void Remove(string url)
+    {
+        string path = Path.Combine(Folder, "http", Hash(url));
+        TryDelete(path + ".bin");
+        TryDelete(path + ".404");
+    }
+
     /// <summary>Gets a reader of byte ranges of <paramref name="url"/>, cached in chunks.</summary>
     /// <param name="url">The file's URL.</param>
     /// <param name="version">A version of the file (e.g. its last-modified time), so a changed file isn't read from old chunks.</param>
